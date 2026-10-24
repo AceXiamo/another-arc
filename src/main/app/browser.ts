@@ -1,0 +1,737 @@
+import { existsSync } from 'node:fs'
+import { join } from 'node:path'
+import { app, dialog, Menu, nativeTheme, session, WebContentsView, type BrowserWindow, type IpcMainInvokeEvent, type WebContents } from 'electron'
+import { DEFAULT_WINDOW_STATE } from '@shared/defaults'
+import { clampSidebarWidth, SURFACE_FRAME_PREFIX, surfaceBounds, SURFACES, type SurfaceId } from '@shared/layout'
+import type { ShellSnapshot, WindowState } from '@shared/types'
+import { translator, type Translate } from '@shared/i18n'
+import { buildSearchUrl, internalUrl, SEARCH_ENGINES, searchTemplate, type InternalPage } from '@shared/url'
+import { DownloadManager } from '../downloads/download-manager'
+import { ExtensionManager } from '../extensions/extension-manager'
+import { FaviconCache } from '../history/favicon-cache'
+import { HistoryService } from '../history/history-service'
+import { RpcRouter } from '../ipc/router'
+import { registerHandlers } from '../ipc/handlers'
+import { showPageContextMenu } from '../navigation/context-menu'
+import { Database } from '../persistence/database'
+import { Persister } from '../persistence/persister'
+import { SessionStore } from '../persistence/session-store'
+import { PermissionManager } from '../permissions/permission-manager'
+import { ProfileManager } from '../profiles/profile-manager'
+import { SettingsService } from '../settings/settings-service'
+import type { CommandId } from '../shortcuts/commands'
+import { isReservedKeyUp, reservedCommandFor } from '../shortcuts/keymap'
+import { buildAppMenu } from '../shortcuts/menu'
+import { importFromArc, isFreshProfile, type ArcImportHost } from '../import/arc-import'
+import { TabDiscarder } from '../tabs/discarder'
+import { TabManager } from '../tabs/tab-manager'
+import { ZOOM_SETTINGS_KEY, ZoomStore } from '../tabs/zoom'
+import { BrowserWindowController } from '../windows/browser-window'
+import { ShellSync } from '../windows/shell-sync'
+import { isDev, outPath, rendererDevUrl, userDataPath } from './environment'
+import { mark, startupMarks } from './perf'
+import { handleAppProtocols, SHELL_ORIGIN, shellUrl } from './protocols'
+
+const ARC_IMPORT_OFFERED_KEY = 'import.arcOffered'
+/** Let the window paint before asking. */
+const ARC_IMPORT_OFFER_DELAY_MS = 600
+
+interface StoredBounds {
+  x: number
+  y: number
+  width: number
+  height: number
+}
+
+/** Composition root: owns every service and wires them together. */
+export class Browser {
+  readonly db: Database
+  readonly store: SessionStore
+  readonly persister: Persister
+  readonly settings: SettingsService
+  readonly profiles: ProfileManager
+  readonly history: HistoryService
+  readonly favicons: FaviconCache
+  readonly zoom: ZoomStore
+  readonly shell = new ShellSync()
+  readonly tabs: TabManager
+  readonly downloads: DownloadManager
+  readonly permissions: PermissionManager
+  readonly extensions: ExtensionManager
+  readonly discarder: TabDiscarder
+  readonly router: RpcRouter
+  window: BrowserWindowController | null = null
+
+  private windowState: WindowState
+  private readonly certExceptions = new Set<string>()
+  private enteredFullscreenForHtml = false
+  private shellReady = false
+  private quitting = false
+  private shutDown = false
+  private readonly pendingUrls: string[] = []
+  /** Visibility requested before the surface's view finished being created. */
+  private readonly pendingSurfaces = new Map<SurfaceId, boolean>()
+  /** The one-time "Import from Arc?" offer was already shown on this profile. */
+  private arcImportOffered = false
+
+  constructor() {
+    this.db = new Database(userDataPath('browser.db'))
+    this.store = new SessionStore(this.db)
+    this.persister = new Persister(this.db, this.store)
+    const stored = this.store.loadSettings()
+    this.settings = new SettingsService(stored, this.persister)
+    this.profiles = new ProfileManager(this.store)
+    this.history = new HistoryService(this.db)
+    this.favicons = new FaviconCache(this.db)
+    this.zoom = new ZoomStore(stored.get(ZOOM_SETTINGS_KEY), this.persister)
+    this.persister.addFlusher(() => this.history.flush())
+
+    this.tabs = new TabManager({
+      profiles: this.profiles,
+      persister: this.persister,
+      shell: this.shell,
+      history: this.history,
+      favicons: this.favicons,
+      settings: this.settings,
+      zoom: this.zoom
+    })
+    this.persister.attach(this.tabs)
+
+    this.downloads = new DownloadManager(this.db, this.shell, this.settings)
+    this.permissions = new PermissionManager(this.db, {
+      tabIdFor: (wc) => this.tabs.tabIdFor(wc),
+      promptsChanged: (prompts) => {
+        this.shell.permissionPrompts(prompts)
+        // Prompts live in the sidebar; make sure it is visible.
+        if (prompts.length > 0 && this.windowState.sidebarCollapsed) this.setSidebar({ collapsed: false })
+      }
+    })
+    this.profiles.setSessionInitializer((_profile, ses) => {
+      this.permissions.attach(ses)
+      this.downloads.attach(ses)
+    })
+
+    const profileSession = this.profiles.defaultSession()
+    const browser = this
+    this.extensions = new ExtensionManager(
+      this.store,
+      profileSession,
+      this.profiles.get('default').partition,
+      app.getPath('userData'),
+      outPath('preload', 'extension-compat.cjs'),
+      {
+        tabs: this.tabs,
+        window: () => this.window,
+        shell: this.shell,
+        confirm: (message, detail) => this.confirm(message, detail),
+        get t() {
+          return browser.t
+        }
+      }
+    )
+    this.discarder = new TabDiscarder(this.tabs, this.settings)
+
+    this.arcImportOffered = stored.get(ARC_IMPORT_OFFERED_KEY) === true
+    const layout = (stored.get('window.layout') ?? {}) as Partial<WindowState>
+    this.windowState = {
+      ...DEFAULT_WINDOW_STATE,
+      activeSpaceId: '',
+      sidebarWidth: clampSidebarWidth(layout.sidebarWidth ?? DEFAULT_WINDOW_STATE.sidebarWidth),
+      sidebarCollapsed: layout.sidebarCollapsed === true
+    }
+
+    this.tabs.restore(
+      this.store.loadSpaces(),
+      this.store.loadTabs(),
+      (stored.get('session.activeSpaceId') as string | undefined) ?? null,
+      this.store.loadFolders()
+    )
+    this.windowState.activeSpaceId = this.tabs.model.activeSpaceId
+
+    this.settings.onChange((patch) => {
+      this.shell.settings(patch)
+      if (patch.theme) nativeTheme.themeSource = patch.theme
+      if (patch.language) {
+        this.installMenu()
+        this.tabs.relocalizeSpaceNames(patch.language)
+      }
+    })
+    // Pages follow the browser theme through prefers-color-scheme.
+    nativeTheme.themeSource = this.settings.get().theme
+
+    this.wireDelegates()
+    this.router = new RpcRouter((event) => this.isTrustedSender(event))
+    registerHandlers(this.router, this)
+    this.router.install()
+  }
+
+  // ---------------------------------------------------------------------------
+  // Startup
+  // ---------------------------------------------------------------------------
+
+  async start(): Promise<void> {
+    // Packaged builds get the icon from the bundle; dev runs borrow it here.
+    const devIcon = join(app.getAppPath(), 'resources', 'icon.png')
+    if (!app.isPackaged && existsSync(devIcon)) app.dock?.setIcon(devIcon)
+    handleAppProtocols(this.favicons, (request) => this.extensions.handleIconRequest(request))
+    hardenDefaultSession()
+    this.installMenu()
+
+    mark('browser-constructed')
+    const window = this.createWindow()
+    mark('window-created')
+    window.shellContents.once('did-finish-load', () => mark('shell-loaded'))
+    // Extensions must be registered before the first page loads so their
+    // content scripts apply; this overlaps with the shell booting.
+    const extensionsReady = this.extensions.init().catch((error) => console.error('[extensions]', error))
+    void window.shellContents.loadURL(shellUrl(rendererDevUrl))
+    await extensionsReady
+    mark('extensions-ready')
+    this.tabs.attachWindow(window)
+    const first = window.currentPage?.webContents
+    if (first) first.once('did-finish-load', () => mark('first-page-loaded'))
+    else mark('first-page-loaded')
+    for (const url of this.pendingUrls.splice(0)) this.openExternalUrl(url)
+
+    setTimeout(() => {
+      if (!window.win.isDestroyed() && !window.win.isVisible()) this.revealWindow(window)
+    }, 500).unref()
+
+    this.discarder.start()
+    // Housekeeping once the UI is up.
+    setTimeout(() => {
+      this.history.store.prune(180)
+      this.favicons.prune()
+    }, 30_000).unref()
+  }
+
+  private createWindow(): BrowserWindowController {
+    const bounds = this.store.loadSettings().get('window.bounds') as StoredBounds | undefined
+    const window = new BrowserWindowController({
+      bounds: bounds ?? null,
+      layout: {
+        sidebarWidth: this.windowState.sidebarWidth,
+        sidebarCollapsed: this.windowState.sidebarCollapsed,
+        htmlFullscreen: false
+      },
+      preload: outPath('preload', 'shell.cjs'),
+      backgroundColor: nativeTheme.shouldUseDarkColors ? '#19191d' : '#ebebf0',
+      devTools: true
+    })
+    this.window = window
+    this.shell.attach(window.shellContents)
+    this.wireShell(window)
+    this.syncTrafficLights()
+
+    const saveBounds = () => {
+      if (window.win.isDestroyed() || window.win.isFullScreen() || window.win.isMinimized()) return
+      this.persister.setSetting('window.bounds', window.win.getNormalBounds())
+    }
+    window.win.on('resized', saveBounds)
+    window.win.on('moved', saveBounds)
+    window.win.on('enter-full-screen', () => this.patchWindow({ fullscreen: true }))
+    window.win.on('leave-full-screen', () => {
+      this.enteredFullscreenForHtml = false
+      this.patchWindow({ fullscreen: false })
+    })
+    window.win.on('focus', () => this.patchWindow({ focused: true }))
+    window.win.on('blur', () => this.patchWindow({ focused: false }))
+    window.win.on('close', (event) => {
+      saveBounds()
+      if (!this.quitting) {
+        // Closing the window keeps the session alive; the dock icon brings it back.
+        event.preventDefault()
+        if (window.win.isFullScreen()) {
+          window.win.once('leave-full-screen', () => window.win.hide())
+          window.win.setFullScreen(false)
+        } else {
+          window.win.hide()
+        }
+      }
+    })
+    return window
+  }
+
+  private wireShell(window: BrowserWindowController): void {
+    const wc = window.shellContents
+    wc.on('will-navigate', (event) => event.preventDefault())
+    wc.on('before-input-event', (event, input) => this.handleReservedKeys(event, input))
+    wc.on('render-process-gone', (_e, details) => {
+      console.error('[shell] renderer gone', details.reason)
+      if (!this.quitting) setTimeout(() => wc.reload(), 300)
+    })
+    wc.setWindowOpenHandler((details) => {
+      if (details.url === 'about:blank' && details.frameName.startsWith(SURFACE_FRAME_PREFIX)) {
+        const id = details.frameName.slice(SURFACE_FRAME_PREFIX.length) as SurfaceId
+        if (!(id in SURFACES)) return { action: 'deny' }
+        return {
+          action: 'allow',
+          createWindow: (options) => this.createSurface(window, id, options)
+        }
+      }
+      // Links clicked inside internal pages open as normal tabs.
+      if (/^https?:|^chrome-extension:/.test(details.url)) this.tabs.createTab({ url: details.url })
+      return { action: 'deny' }
+    })
+  }
+
+  /** Adopt a shell-opened child window as a floating surface view. */
+  private createSurface(window: BrowserWindowController, id: SurfaceId, options: Electron.BrowserWindowConstructorOptions): WebContents {
+    const guest = (options as { webContents?: WebContents }).webContents
+    const view = new WebContentsView(guest ? { webContents: guest } : { webPreferences: options.webPreferences })
+    view.setBackgroundColor('#00000000')
+    const visible = this.pendingSurfaces.get(id) ?? false
+    this.pendingSurfaces.delete(id)
+    window.addSurface(id, { view, visible, place: (card) => surfaceBounds(id, card) })
+    view.webContents.on('before-input-event', (event, input) => this.handleReservedKeys(event, input))
+    if (visible) setImmediate(() => view.webContents.focus())
+    return view.webContents
+  }
+
+  // ---------------------------------------------------------------------------
+  // Shell state
+  // ---------------------------------------------------------------------------
+
+  snapshot(): ShellSnapshot {
+    const t = this.tabs.snapshot()
+    return {
+      tabs: t.tabs,
+      spaces: t.spaces,
+      folders: t.folders,
+      spaceOrder: t.spaceOrder,
+      window: { ...this.windowState, activeSpaceId: t.activeSpaceId },
+      settings: this.settings.get(),
+      extensions: this.extensions.info(),
+      extensionPartition: this.extensions.partition,
+      downloads: this.downloads.list(),
+      permissionPrompts: this.permissions.prompts(),
+      find: null,
+      isDev
+    }
+  }
+
+  onShellReady(): void {
+    const window = this.window
+    if (!window) return
+    if (!this.shellReady) {
+      this.shellReady = true
+      mark('shell-first-paint')
+      this.revealWindow(window)
+      // Tests call offerArcImport() themselves, after stubbing the dialogs.
+      if (process.env.ARC_TEST !== '1') setTimeout(() => void this.offerArcImport(), ARC_IMPORT_OFFER_DELAY_MS)
+    }
+    window.focusPage()
+  }
+
+  private get arcImportHost(): ArcImportHost {
+    const browser = this
+    return {
+      tabs: this.tabs,
+      favicons: this.favicons,
+      extensions: this.extensions,
+      get t() {
+        return browser.t
+      },
+      parent: () => this.window?.win ?? null,
+      toast: (message) => this.shell.command({ type: 'toast', message })
+    }
+  }
+
+  /** File menu / Settings / ⌘T: import the sidebar and extensions from Arc. */
+  importFromArc(): Promise<void> {
+    return importFromArc(this.arcImportHost).catch((error) => console.error('[arc-import]', error))
+  }
+
+  /** Once per profile, while it is still empty: offer to bring everything over from Arc. */
+  async offerArcImport(): Promise<void> {
+    if (this.arcImportOffered || this.quitting || !isFreshProfile(this.arcImportHost)) return
+    this.arcImportOffered = true
+    this.persister.setSetting(ARC_IMPORT_OFFERED_KEY, true)
+    await importFromArc(this.arcImportHost, { firstRun: true }).catch((error) => console.error('[arc-import]', error))
+  }
+
+  /** Integration tests (ARC_TEST) show the window without stealing focus. */
+  private revealWindow(window: BrowserWindowController): void {
+    if (process.env.ARC_TEST === '1') window.win.showInactive()
+    else window.win.show()
+  }
+
+  setSidebar(opts: { width?: number; collapsed?: boolean }): void {
+    const patch: Partial<WindowState> = {}
+    if (opts.width !== undefined) patch.sidebarWidth = clampSidebarWidth(opts.width)
+    if (opts.collapsed !== undefined) patch.sidebarCollapsed = opts.collapsed
+    this.window?.setLayout({
+      sidebarWidth: patch.sidebarWidth ?? this.windowState.sidebarWidth,
+      sidebarCollapsed: patch.sidebarCollapsed ?? this.windowState.sidebarCollapsed
+    })
+    this.patchWindow(patch)
+    this.syncTrafficLights()
+    this.persister.setSetting('window.layout', {
+      sidebarWidth: this.windowState.sidebarWidth,
+      sidebarCollapsed: this.windowState.sidebarCollapsed
+    })
+  }
+
+  setOverlay(open: boolean): void {
+    this.window?.setOverlay(open)
+    if (!open) this.window?.focusPage()
+    this.syncTrafficLights()
+  }
+
+  /** With the sidebar collapsed the page reaches the top-left corner; hide the
+   * traffic lights there unless the sidebar is peeking or an overlay is open. */
+  private syncTrafficLights(): void {
+    const window = this.window
+    if (!window || window.win.isDestroyed()) return
+    window.win.setWindowButtonVisibility(!this.windowState.sidebarCollapsed || window.isOverlayOpen)
+  }
+
+  setSurfaceVisible(id: SurfaceId, visible: boolean): void {
+    const window = this.window
+    if (!window) return
+    if (!window.getSurface(id)) {
+      this.pendingSurfaces.set(id, visible)
+      return
+    }
+    window.setSurfaceVisible(id, visible)
+    if (visible) window.getSurface(id)?.view.webContents.focus()
+    else window.focusPage()
+  }
+
+  private patchWindow(patch: Partial<WindowState>): void {
+    this.windowState = { ...this.windowState, ...patch }
+    this.shell.window(patch)
+  }
+
+  // ---------------------------------------------------------------------------
+  // Commands (menu, shortcuts)
+  // ---------------------------------------------------------------------------
+
+  runCommand(id: CommandId): void {
+    const window = this.window
+    const tabs = this.tabs
+    const active = tabs.model.activeTab()
+    if (window && !window.win.isVisible() && id !== 'window.close') this.showWindow()
+    switch (id) {
+      case 'tab.new':
+        return this.openPalette('new-tab')
+      case 'address.focus':
+        return this.openPalette(active ? 'edit-url' : 'new-tab')
+      case 'tab.close':
+        if (window?.isOverlayOpen) return this.shell.command({ type: 'palette.close' })
+        if (active) tabs.closeTab(active.id)
+        return
+      case 'tab.reopen':
+        return tabs.reopenClosedTab()
+      case 'tab.next':
+        return tabs.selectAdjacent(1)
+      case 'tab.prev':
+        return tabs.selectAdjacent(-1)
+      case 'tab.reload':
+        return active && tabs.reload(active.id)
+      case 'tab.hardReload':
+        return active && tabs.reload(active.id, true)
+      case 'tab.stop':
+        return active && tabs.stop(active.id)
+      case 'tab.back':
+        return active && tabs.goBack(active.id)
+      case 'tab.forward':
+        return active && tabs.goForward(active.id)
+      case 'tab.duplicate':
+        return active && tabs.duplicateTab(active.id)
+      case 'tab.pin':
+        return active && tabs.toggleSaved(active.id)
+      case 'tab.copyUrl':
+        if (active) {
+          tabs.copyUrl(active.id)
+          this.shell.command({ type: 'toast', message: this.t('toast.urlCopied') })
+        }
+        return
+      case 'space.next':
+        return tabs.switchSpace(1)
+      case 'space.prev':
+        return tabs.switchSpace(-1)
+      case 'find.open':
+        if (active && tabs.runtime(active.id)) this.shell.command({ type: 'find.open' })
+        return
+      case 'find.next':
+      case 'find.prev':
+        return this.shell.command({ type: 'find.open' })
+      case 'zoom.in':
+        return active && tabs.adjustZoom(active.id, 1)
+      case 'zoom.out':
+        return active && tabs.adjustZoom(active.id, -1)
+      case 'zoom.reset':
+        return active && tabs.adjustZoom(active.id, 0)
+      case 'sidebar.toggle':
+        return this.setSidebar({ collapsed: !this.windowState.sidebarCollapsed })
+      case 'page.devtools':
+        return active && tabs.toggleDevTools(active.id)
+      case 'shell.devtools':
+        return window?.shellContents.openDevTools({ mode: 'detach' })
+      case 'open.history':
+        return this.openInternal('history')
+      case 'open.downloads':
+        return this.openInternal('downloads')
+      case 'open.extensions':
+        return this.openInternal('extensions')
+      case 'open.settings':
+        return this.openInternal('settings')
+      case 'import.arc':
+        return void this.importFromArc()
+      case 'window.close':
+        return window?.win.close()
+      default: {
+        const n = /^tab\.select\.(\d)$/.exec(id)
+        if (n) tabs.selectIndex(Number(n[1]))
+      }
+    }
+  }
+
+  private openPalette(mode: 'new-tab' | 'edit-url'): void {
+    // Raise the shell right away; the palette renders on the next frame.
+    this.window?.setOverlay(true)
+    this.shell.command({ type: 'palette.open', mode })
+  }
+
+  /** Focus an existing internal page tab in this space, or open one. */
+  openInternal(page: InternalPage): void {
+    const url = internalUrl(page)
+    const space = this.tabs.model.activeSpace()
+    const existing = space && this.tabs.model.orderedTabIds(space.id).find((id) => this.tabs.model.getTab(id)?.url === url)
+    if (existing) this.tabs.activateTab(existing)
+    else this.tabs.createTab({ url })
+  }
+
+  handleReservedKeys(event: Electron.Event, input: Electron.Input): void {
+    const command = reservedCommandFor(input)
+    if (command) {
+      event.preventDefault()
+      this.runCommand(command)
+    } else if (isReservedKeyUp(input)) {
+      event.preventDefault()
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Integrations
+  // ---------------------------------------------------------------------------
+
+  private wireDelegates(): void {
+    this.tabs.setDelegate({
+      contextMenu: (tab, wc, params) => {
+        const settings = this.settings.get()
+        showPageContextMenu(wc, params, {
+          t: this.t,
+          searchEngineName: this.searchEngineName(),
+          openUrl: (url, background) => {
+            const index = tab.pinned ? 0 : this.tabs.model.sortOrderOf(tab) + 1
+            this.tabs.createTab({ url, background, spaceId: tab.spaceId, index })
+          },
+          search: (text) => this.tabs.createTab({ url: buildSearchUrl(text, searchTemplate(settings)) }),
+          extensionItems: () => this.extensions.contextMenuItems(wc, params)
+        })
+      },
+      beforeInput: (_tabId, event, input) => this.handleReservedKeys(event, input),
+      popupCreated: (win) => this.wirePopup(win),
+      confirmLeave: async () => {
+        const options: Electron.MessageBoxOptions = {
+          type: 'question',
+          message: this.t('dialog.leave.title'),
+          detail: this.t('dialog.leave.detail'),
+          buttons: [this.t('dialog.leave.confirm'), this.t('common.cancel')],
+          defaultId: 0,
+          cancelId: 1
+        }
+        const res = this.window
+          ? await dialog.showMessageBox(this.window.win, options)
+          : await dialog.showMessageBox(options)
+        return res.response === 0
+      },
+      runtimeCreated: (_tab, wc) => this.extensions.tabCreated(wc),
+      runtimeDestroyed: () => undefined,
+      activeChanged: (wc) => {
+        this.extensions.tabSelected(wc)
+        if (this.window?.getSurface('find')?.visible) this.shell.command({ type: 'find.close' })
+      },
+      htmlFullscreen: (on) => this.setHtmlFullscreen(on)
+    })
+  }
+
+  private setHtmlFullscreen(on: boolean): void {
+    const window = this.window
+    if (!window) return
+    window.setLayout({ htmlFullscreen: on })
+    this.patchWindow({ htmlFullscreen: on })
+    if (on && !window.win.isFullScreen()) {
+      this.enteredFullscreenForHtml = true
+      window.win.setFullScreen(true)
+    } else if (!on && this.enteredFullscreenForHtml) {
+      this.enteredFullscreenForHtml = false
+      window.win.setFullScreen(false)
+    }
+  }
+
+  /** window.open() popups with features (OAuth etc.) are real windows. */
+  private wirePopup(win: BrowserWindow): void {
+    const wc = win.webContents
+    wc.on('before-input-event', (event, input) => {
+      if (input.type === 'keyDown' && input.meta && !input.shift && !input.alt && input.code === 'KeyW') {
+        event.preventDefault()
+        win.close()
+      }
+    })
+    wc.on('context-menu', (_e, params) =>
+      showPageContextMenu(wc, params, {
+        t: this.t,
+        searchEngineName: this.searchEngineName(),
+        openUrl: (url, background) => this.tabs.createTab({ url, background }),
+        search: (text) => this.tabs.createTab({ url: buildSearchUrl(text, searchTemplate(this.settings.get())) }),
+        extensionItems: () => this.extensions.contextMenuItems(wc, params)
+      })
+    )
+    wc.setWindowOpenHandler((details) => {
+      if (/^https?:/.test(details.url)) this.tabs.createTab({ url: details.url })
+      return { action: 'deny' }
+    })
+  }
+
+  handleCertificateError(
+    event: Electron.Event,
+    url: string,
+    error: string,
+    callback: (trusted: boolean) => void
+  ): void {
+    let host = ''
+    try {
+      host = new URL(url).host
+    } catch {
+      // fall through: deny
+    }
+    if (host && this.certExceptions.has(host)) {
+      console.warn(`[cert] proceeding past ${error} for ${host} (user exception)`)
+      event.preventDefault()
+      callback(true)
+      return
+    }
+    callback(false)
+  }
+
+  allowCertificate(tabId: string): void {
+    const tab = this.tabs.model.getTab(tabId)
+    if (!tab?.error || tab.error.kind !== 'certificate') return
+    try {
+      this.certExceptions.add(new URL(tab.error.url || tab.url).host)
+    } catch {
+      return
+    }
+    this.tabs.reload(tabId)
+  }
+
+  /** URLs handed to us by macOS (default browser, `open`, dock drops). */
+  openExternalUrl(url: string): void {
+    if (!this.window) {
+      this.pendingUrls.push(url)
+      return
+    }
+    if (!/^(https?|file):/i.test(url)) return
+    this.tabs.createTab({ url })
+    this.showWindow()
+  }
+
+  async confirm(message: string, detail: string): Promise<boolean> {
+    const options: Electron.MessageBoxOptions = {
+      type: 'warning',
+      message,
+      detail,
+      buttons: [this.t('common.allow'), this.t('common.deny')],
+      defaultId: 1,
+      cancelId: 1
+    }
+    const res = this.window ? await dialog.showMessageBox(this.window.win, options) : await dialog.showMessageBox(options)
+    return res.response === 0
+  }
+
+  /** `t()` for the current UI language. */
+  get t(): Translate {
+    return translator(this.settings.get().language)
+  }
+
+  private searchEngineName(): string {
+    const { searchEngine } = this.settings.get()
+    return searchEngine === 'custom' ? this.t('search.genericEngine') : SEARCH_ENGINES[searchEngine].name
+  }
+
+  /** (Re)build the native menu; called again whenever the language changes. */
+  private installMenu(): void {
+    Menu.setApplicationMenu(buildAppMenu((id) => this.runCommand(id), { isDev, t: this.t }))
+  }
+
+  startupMarks(): Record<string, number> {
+    return startupMarks()
+  }
+
+  showWindow(): void {
+    const window = this.window
+    if (window && !window.destroyed) this.revealWindow(window)
+  }
+
+  // ---------------------------------------------------------------------------
+  // Security & lifecycle
+  // ---------------------------------------------------------------------------
+
+  private isTrustedSender(event: IpcMainInvokeEvent): boolean {
+    const window = this.window
+    if (!window || event.sender !== window.shellContents) return false
+    const frame = event.senderFrame
+    if (!frame || frame !== event.sender.mainFrame) return false
+    try {
+      // Compare protocol + host: WHATWG URL reports origin "null" for
+      // non-special schemes such as app://.
+      const url = new URL(frame.url)
+      const expected = new URL(rendererDevUrl ?? SHELL_ORIGIN)
+      return url.protocol === expected.protocol && url.host === expected.host
+    } catch {
+      return false
+    }
+  }
+
+  /** before-quit: capture navigation state while every WebContents is alive. */
+  markQuitting(): void {
+    if (this.quitting) return
+    this.quitting = true
+    this.discarder.stop()
+    this.extensions.shutdown()
+    this.tabs.snapshotAll()
+    // From here on, WebContents being torn down must not touch the model.
+    this.tabs.freeze()
+    this.persister.flush()
+    this.tabs.closeAllForQuit()
+  }
+
+  /** will-quit: final flush and close the database. */
+  shutdown(): void {
+    if (this.shutDown) return
+    this.shutDown = true
+    this.markQuitting()
+    try {
+      this.history.flush()
+      this.persister.flush()
+    } finally {
+      this.persister.close()
+      this.db.close()
+    }
+  }
+
+  get isQuitting(): boolean {
+    return this.quitting
+  }
+}
+
+/** The shell's own session never needs downloads or web permissions. */
+function hardenDefaultSession(): void {
+  const ses = session.defaultSession
+  ses.setPermissionRequestHandler((_wc, permission, callback) => callback(permission === 'clipboard-sanitized-write'))
+  ses.setPermissionCheckHandler((_wc, permission) => permission === 'clipboard-sanitized-write')
+  ses.on('will-download', (_e, item) => item.cancel())
+}

@@ -1,0 +1,22 @@
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "lib": [
+      "ES2024",
+      "DOM",
+      "DOM.Iterable"
+    ],
+    "types": [
+      "node"
+    ],
+    "composite": true,
+    "outDir": "out/.tsc-test"
+  },
+  "include": [
+    "tests/**/*",
+    "vitest.config.ts",
+    "playwright.config.ts",
+    "src/shared/**/*",
+    "src/main/**/*"
+  ]
+}

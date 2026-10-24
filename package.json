@@ -1,0 +1,43 @@
+{
+  "name": "another-arc",
+  "productName": "Another Arc",
+  "version": "0.1.0",
+  "private": true,
+  "description": "A personal, performance-first Arc-style browser built on Electron.",
+  "main": "out/main/index.js",
+  "type": "module",
+  "scripts": {
+    "dev": "electron-vite dev",
+    "build": "electron-vite build",
+    "preview": "electron-vite preview",
+    "typecheck": "tsc -p tsconfig.node.json --noEmit && tsc -p tsconfig.web.json --noEmit && tsc -p tsconfig.test.json --noEmit",
+    "test": "vitest run",
+    "test:e2e": "electron-vite build && playwright test",
+    "check": "pnpm typecheck && pnpm test && pnpm build",
+    "dist": "electron-vite build && electron-builder --mac --arm64"
+  },
+  "packageManager": "pnpm@9.11.0",
+  "devDependencies": {
+    "@playwright/test": "1.64.1",
+    "@tailwindcss/vite": "4.3.3",
+    "@types/chrome": "^0.3.6",
+    "@types/node": "24",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "6.1.2",
+    "electron": "44.9.3",
+    "electron-builder": "26.18.0",
+    "electron-vite": "6.0.0",
+    "react": "19.3.1",
+    "react-dom": "19.3.1",
+    "tailwindcss": "4.3.3",
+    "typescript": "7.0.2",
+    "vite": "8.3.5",
+    "vitest": "5.0.5",
+    "zustand": "5.0.16"
+  },
+  "dependencies": {
+    "electron-chrome-extensions": "4.9.0"
+  },
+  "author": "AceXiamo"
+}

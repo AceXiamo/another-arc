@@ -1,0 +1,56 @@
+appId: dev.anotherarc.browser
+productName: Another Arc
+copyright: Personal use
+
+directories:
+  output: release
+  buildResources: resources
+
+files:
+  - out/main/**
+  - out/preload/**
+  - out/renderer/**
+  - package.json
+  - '!**/*.map'
+
+asar: true
+
+# Security hardening for the packaged binary.
+electronFuses:
+  runAsNode: false
+  enableCookieEncryption: true
+  enableNodeOptionsEnvironmentVariable: false
+  enableNodeCliInspectArguments: false
+  enableEmbeddedAsarIntegrityValidation: true
+  onlyLoadAppFromAsar: true
+  grantFileProtocolExtraPrivileges: false
+
+mac:
+  target:
+    - target: dmg
+      arch: [arm64]
+    - target: dir
+      arch: [arm64]
+  icon: resources/icon.png
+  category: public.app-category.productivity
+  # No Developer ID available: ad-hoc signature (required on Apple Silicon).
+  identity: '-'
+  hardenedRuntime: false
+  darkModeSupport: true
+  extendInfo:
+    NSCameraUsageDescription: Websites you allow can use the camera.
+    NSMicrophoneUsageDescription: Websites you allow can use the microphone.
+    NSLocationUsageDescription: Websites you allow can use your location.
+    NSLocationWhenInUseUsageDescription: Websites you allow can use your location.
+    # Lets the app be chosen as the default web browser.
+    CFBundleURLTypes:
+      - CFBundleURLName: Web site URL
+        CFBundleURLSchemes: [http, https]
+    CFBundleDocumentTypes:
+      - CFBundleTypeName: HTML document
+        CFBundleTypeRole: Viewer
+        LSItemContentTypes: [public.html, public.xhtml]
+        LSHandlerRank: Alternate
+
+dmg:
+  sign: false
