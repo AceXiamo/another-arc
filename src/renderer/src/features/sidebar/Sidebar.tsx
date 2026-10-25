@@ -41,9 +41,16 @@ export function Sidebar({ floating = false }: { floating?: boolean }) {
   return (
     <aside
       onWheel={onWheel}
-      onPointerLeave={floating ? () => useUi.setState({ peek: false }) : undefined}
-      className={`absolute bottom-0 left-0 top-0 flex flex-col ${
-        floating ? 'anim-slide z-30 rounded-r-[12px] bg-[var(--chrome)] shadow-[var(--popover-shadow)]' : ''
+      onPointerLeave={
+        floating
+          ? () => {
+              // The theme panel floats beside the sidebar; reaching it must not end the peek.
+              if (!useUi.getState().spaceEditor) useUi.setState({ peek: false })
+            }
+          : undefined
+      }
+      className={`chrome-ink absolute bottom-0 left-0 top-0 flex flex-col ${
+        floating ? 'chrome-surface anim-slide z-30 rounded-r-[12px] shadow-[var(--popover-shadow)]' : ''
       } ${focused ? '' : 'saturate-[0.85]'}`}
       style={{ width: 'var(--sidebar-width)' }}
     >

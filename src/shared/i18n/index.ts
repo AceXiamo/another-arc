@@ -7,6 +7,7 @@
 // Placeholders use `{name}` and are filled by `translate`.
 import enCommon from './locales/en/common'
 import enExtImport from './locales/en/ext-import'
+import enTheme from './locales/en/theme'
 import enMain from './locales/en/main'
 import enShellPages from './locales/en/shell-pages'
 import enShellPalette from './locales/en/shell-palette'
@@ -14,6 +15,7 @@ import enShellSettings from './locales/en/shell-settings'
 import enShellSidebar from './locales/en/shell-sidebar'
 import zhCommon from './locales/zh-CN/common'
 import zhExtImport from './locales/zh-CN/ext-import'
+import zhTheme from './locales/zh-CN/theme'
 import zhMain from './locales/zh-CN/main'
 import zhShellPages from './locales/zh-CN/shell-pages'
 import zhShellPalette from './locales/zh-CN/shell-palette'
@@ -36,7 +38,8 @@ const en = {
   ...enShellPalette,
   ...enShellSettings,
   ...enShellPages,
-  ...enExtImport
+  ...enExtImport,
+  ...enTheme
 }
 
 export type MessageKey = keyof typeof en
@@ -51,7 +54,8 @@ const zhCN: Messages = {
   ...zhShellPalette,
   ...zhShellSettings,
   ...zhShellPages,
-  ...zhExtImport
+  ...zhExtImport,
+  ...zhTheme
 }
 
 const DICTIONARIES: Record<Locale, Messages> = { en, 'zh-CN': zhCN }

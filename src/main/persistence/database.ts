@@ -203,6 +203,11 @@ const MIGRATIONS: string[] = [
   ALTER TABLE tabs ADD COLUMN folder_id TEXT;
   ALTER TABLE tabs ADD COLUMN saved_url TEXT NOT NULL DEFAULT '';
   ALTER TABLE tabs ADD COLUMN saved_title TEXT NOT NULL DEFAULT '';
+  `,
+  // v3 — space themes (gradient, intensity, grain, appearance) as JSON;
+  // NULL = the defaults (spaces saved before v3). Sanitized on load.
+  `
+  ALTER TABLE spaces ADD COLUMN theme TEXT;
   `
 ]
 

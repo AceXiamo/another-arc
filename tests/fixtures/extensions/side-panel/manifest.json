@@ -1,0 +1,11 @@
+{
+  "manifest_version": 3,
+  "name": "Side Panel Probe",
+  "version": "1.0.0",
+  "description": "Test fixture: a side panel opened from the toolbar, the way wallet extensions do it.",
+  "background": { "service_worker": "sw.js" },
+  "permissions": ["sidePanel", "storage"],
+  "side_panel": { "default_path": "panel.html" },
+  "action": { "default_title": "Side Panel Probe", "default_icon": "icon.png" },
+  "icons": { "48": "icon.png" }
+}

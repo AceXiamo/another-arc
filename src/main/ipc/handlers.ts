@@ -1,17 +1,19 @@
 import { dialog, Menu, nativeImage, type MenuItemConstructorOptions } from 'electron'
 import { isSpaceIconId } from '@shared/defaults'
+import { IMPORT_BROWSERS } from '@shared/ext-import'
 import type { Translate } from '@shared/i18n'
 import { outPath } from '../app/environment'
 import { describeError } from '../app/i18n'
 import { SURFACES } from '@shared/layout'
 import { isSavedTab } from '@shared/tabs'
-import { summarizeArcSidebar } from '../import/arc-sidebar'
-import { importArcSidebarWithDialogs, loadArcSidebar } from '../import/arc-sidebar-import'
+import { SPACE_APPEARANCES, THEME_LIMITS } from '@shared/theme'
+import { summarizeSidebar } from '../import/arc-sidebar'
+import { importArcSidebarWithDialogs, loadArcSidebar } from '../import/sidebar-import'
 import { INTERNAL_PAGES, SEARCH_ENGINES, type InternalPage } from '@shared/url'
 import type { SearchEngineId } from '@shared/types'
 import type { Browser } from '../app/browser'
 import type { RpcRouter } from './router'
-import { tuple, v } from './validate'
+import { tuple, v, type Validator } from './validate'
 
 const id = v.id()
 const color = (value: unknown, path: string) => {
@@ -19,11 +21,25 @@ const color = (value: unknown, path: string) => {
   return value
 }
 const point = v.object({ x: v.number(), y: v.number() })
-const spaceInput = v.object({ name: v.string({ max: 200 }), icon: v.string({ max: 32 }), color })
+// Shape only: numbers are clamped and merged by sanitizeSpaceTheme in TabManager.
+const spaceTheme = v.object({
+  gradient: v.optional(v.array(color, THEME_LIMITS.gradientStops)),
+  angle: v.optional(v.number()),
+  intensity: v.optional(v.number()),
+  noise: v.optional(v.number()),
+  appearance: v.optional(v.oneOf(SPACE_APPEARANCES))
+})
+const spaceInput = v.object({
+  name: v.string({ max: 200 }),
+  icon: v.string({ max: 32 }),
+  color,
+  theme: v.optional(spaceTheme)
+})
 const partialSpaceInput = v.object({
   name: v.optional(v.string({ max: 200 })),
   icon: v.optional(v.string({ max: 32 })),
-  color: v.optional(color)
+  color: v.optional(color),
+  theme: v.optional(spaceTheme)
 })
 const internalPage = v.oneOf(Object.keys(INTERNAL_PAGES) as InternalPage[])
 const surfaceId = v.oneOf(Object.keys(SURFACES) as Array<keyof typeof SURFACES>)
@@ -140,12 +156,17 @@ export function registerHandlers(router: RpcRouter, b: Browser): void {
         ]
     popupAt(
       [
-        {
-          label: t(saved ? 'tabMenu.unsave' : 'tabMenu.save'),
-          accelerator: 'Command+D',
-          registerAccelerator: false,
-          click: () => tabs.toggleSaved(tabId)
-        },
+        // A favorite only leaves through "Remove from Favorites".
+        ...(tab.pinned
+          ? []
+          : [
+              {
+                label: t(saved ? 'tabMenu.unsave' : 'tabMenu.save'),
+                accelerator: 'Command+D',
+                registerAccelerator: false,
+                click: () => tabs.toggleSaved(tabId)
+              }
+            ]),
         { label: t(tab.pinned ? 'tabMenu.unpin' : 'tabMenu.pin'), click: () => tabs.togglePinned(tabId) },
         { label: t('tabMenu.duplicate'), click: () => tabs.duplicateTab(tabId) },
         { label: t('tabMenu.copyUrl'), click: () => tabs.copyUrl(tabId) },
@@ -252,6 +273,7 @@ export function registerHandlers(router: RpcRouter, b: Browser): void {
         { label: t('sidebarMenu.newFolder'), click: () => newFolder({ spaceId }) },
         { type: 'separator' },
         { label: t('spaceMenu.edit'), click: () => b.shell.command({ type: 'space.edit', spaceId }) },
+        { label: t('theme.menu.edit'), click: () => b.shell.command({ type: 'space.edit', spaceId, theme: true }) },
         { label: t('sidebarMenu.newSpace'), click: () => b.shell.command({ type: 'space.edit', spaceId: 'new' }) }
       ],
       at
@@ -282,6 +304,7 @@ export function registerHandlers(router: RpcRouter, b: Browser): void {
     popupAt(
       [
         { label: t('spaceMenu.edit'), click: () => b.shell.command({ type: 'space.edit', spaceId }) },
+        { label: t('theme.menu.edit'), click: () => b.shell.command({ type: 'space.edit', spaceId, theme: true }) },
         { type: 'separator' },
         {
           label: t('spaceMenu.delete'),
@@ -306,6 +329,10 @@ export function registerHandlers(router: RpcRouter, b: Browser): void {
   )
   router.handle('window.setOverlay', tuple(v.boolean()), (_c, open) => b.setOverlay(open))
   router.handle('window.focusPage', tuple(), () => b.window?.focusPage())
+  router.handle('window.drag', tuple(v.oneOf(['start', 'end'] as const)), (_c, phase) =>
+    phase === 'start' ? b.window?.beginDrag() : b.window?.endDrag()
+  )
+  router.handle('window.titleBarDoubleClick', tuple(), () => b.window?.titleBarDoubleClick())
   router.handle('surface.setVisible', tuple(surfaceId, v.boolean()), (_c, surface, visible) =>
     b.setSurfaceVisible(surface, visible)
   )
@@ -390,8 +417,16 @@ export function registerHandlers(router: RpcRouter, b: Browser): void {
       at
     )
   })
-  // Import from another browser's profile (see extensions/browser-import.ts).
-  const importBrowser = v.oneOf(['arc', 'chrome'] as const)
+  // Import from another browser's profile (see import/browsers.ts).
+  const importBrowser = v.oneOf(IMPORT_BROWSERS)
+  /** Browser id → profile directory; entries that are not plain names are dropped. */
+  const chosenProfiles: Validator<Record<string, string>> = (value, path) => {
+    const out: Record<string, string> = {}
+    for (const [browser, dir] of Object.entries(v.record()(value, path))) {
+      if (typeof dir === 'string' && dir.length > 0 && dir.length <= 64 && !dir.includes('/')) out[browser] = dir
+    }
+    return out
+  }
   router.handle('extensions.importSources', tuple(), () => b.extensions.importSummaries())
   router.handle('extensions.importFromBrowser', tuple(importBrowser), async (_c, source) => {
     // Per-extension failures are reported in the result dialog; anything
@@ -401,9 +436,13 @@ export function registerHandlers(router: RpcRouter, b: Browser): void {
   // Arc's sidebar: spaces, folders, pinned tabs and favorites (see import/arc-sidebar-import.ts).
   router.handle('import.arcSidebarSummary', tuple(), async () => {
     const sidebar = await loadArcSidebar()
-    return sidebar ? summarizeArcSidebar(sidebar) : null
+    return sidebar ? summarizeSidebar(sidebar) : null
   })
-  router.handle('import.arc', tuple(), () => b.importFromArc())
+  router.handle('import.browsers', tuple(v.optional(chosenProfiles)), (_c, chosen) => b.importableBrowsers(chosen))
+  router.handle('import.run', tuple(importBrowser, v.optional(v.string({ max: 64 }))), (_c, browser, profileDir) =>
+    b.importFrom(browser, profileDir)
+  )
+  router.handle('import.best', tuple(), () => b.importFromBestBrowser())
   router.handle('import.arcSidebar', tuple(), async () => {
     await importArcSidebarWithDialogs(tabs, b.favicons, b.window?.win ?? null, t).catch((error) =>
       console.error('[arc-import]', error)

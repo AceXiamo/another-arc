@@ -7,11 +7,15 @@ const zh: Record<keyof typeof en, string> = {
   'history.today': '今天',
   'history.yesterday': '昨天',
   'history.empty': '暂无历史记录',
+  'history.emptyHint': '你访问过的网页会显示在这里。',
   'history.noMatches': '没有匹配的记录',
+  'history.noMatchesHint': '试试更短的关键词，或网址的一部分。',
+  'history.clearSearch': '清除搜索',
 
   // Downloads page
   'downloads.clearCompleted': '清除已完成',
   'downloads.empty': '暂无下载',
+  'downloads.emptyHint': '下载的文件会显示在这里。',
   'downloads.pause': '暂停',
   'downloads.resume': '继续',
   'downloads.showInFinder': '在访达中显示',
@@ -20,9 +24,13 @@ const zh: Record<keyof typeof en, string> = {
   'downloads.status.interrupted': '已中断',
   'downloads.status.paused': '已暂停 · {size}',
 
+  // Extensions page (the rest of its strings are in shell-settings)
+  'extensions.page.emptyHint': '从文件夹加载已解压的扩展即可开始使用。',
+
   // Empty space placeholder
   'status.empty.title': '{space} 里还没有标签页',
   'status.empty.fallbackSpace': '空间',
+  'status.empty.nothingOpen': '没有打开的标签页',
   'status.empty.newTab': '按{keys}打开新标签页',
 
   // Crash page
@@ -41,6 +49,7 @@ const zh: Record<keyof typeof en, string> = {
 
   // Network error page
   'status.net.title': '无法访问此网站',
+  'status.net.back': '返回',
   'status.net.nameNotResolved': '{host} 的服务器 IP 地址无法找到。',
   'status.net.offline': '{host} 无法连接：你似乎已断开网络。',
   'status.net.refused': '{host} 拒绝了连接请求。',

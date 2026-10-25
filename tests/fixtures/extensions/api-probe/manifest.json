@@ -15,7 +15,8 @@
     "cookies",
     "notifications",
     "declarativeNetRequest",
-    "offscreen"
+    "offscreen",
+    "sidePanel"
   ],
   "host_permissions": ["http://127.0.0.1/*"],
   "action": { "default_title": "API Probe", "default_popup": "popup.html", "default_icon": "icon.png" },

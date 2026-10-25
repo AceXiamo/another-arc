@@ -1,19 +1,22 @@
-import { readFile, stat } from 'node:fs/promises'
-import { homedir } from 'node:os'
+import { readFile } from 'node:fs/promises'
 import { isAbsolute, join } from 'node:path'
 import type { ImportBrowser, ImportSourceSummary } from '@shared/ext-import'
 import type { MessageKey, Translate } from '@shared/i18n'
+import {
+  asObject,
+  browserName,
+  browserRoots,
+  lastUsedProfile,
+  readJsonObject,
+  resolveRoot,
+  type BrowserProfile,
+  type BrowserRoot
+} from '../import/browsers'
 import { localizeMessage, parseManifestText, resolveExtensionSource, SUPPORTED_MANIFEST_VERSIONS } from './installer'
 
-// Reads another Chromium browser's last-used profile and lists the
-// extensions that can be copied over. Strictly read-only: nothing is ever
-// written under the other browser's folder.
-
-/** Product name and macOS "User Data" folder (relative to $HOME) of each browser. */
-const BROWSERS: Record<ImportBrowser, { name: string; path: string[] }> = {
-  arc: { name: 'Arc', path: ['Library', 'Application Support', 'Arc', 'User Data'] },
-  chrome: { name: 'Chrome', path: ['Library', 'Application Support', 'Google', 'Chrome'] }
-}
+// Reads another Chromium browser's profile and lists the extensions that can
+// be copied over. Strictly read-only: nothing is ever written under the other
+// browser's folder. Which browsers exist, and where, is `import/browsers.ts`.
 
 /** Chromium's ManifestLocation values that are user installs: INTERNAL (Web Store) and UNPACKED. */
 const LOCATION_WEB_STORE = 1
@@ -67,41 +70,30 @@ export interface ImportSource {
   extensions: ImportCandidate[]
 }
 
-export interface ImportRoot {
-  browser: ImportBrowser
-  root: string
-}
-
-/**
- * Where to look. `ARC_IMPORT_ROOT` replaces everything with one fake Arc
- * "User Data" folder; integration tests (ARC_TEST) without it look nowhere,
- * so no test ever reads the real browsers' folders.
- */
-export function importRoots(env: NodeJS.ProcessEnv = process.env, home = homedir()): ImportRoot[] {
-  const override = env.ARC_IMPORT_ROOT
-  if (override) return [{ browser: 'arc', root: override }]
-  if (env.ARC_TEST === '1') return []
-  return (Object.keys(BROWSERS) as ImportBrowser[]).map((browser) => ({ browser, root: join(home, ...BROWSERS[browser].path) }))
-}
-
-export function browserName(browser: ImportBrowser): string {
-  return BROWSERS[browser].name
-}
 
 /** Every browser in `roots` whose last-used profile has user-installed extensions. */
 export async function scanImportSources(
   installed: ReadonlySet<string>,
-  roots: ImportRoot[] = importRoots()
+  roots: BrowserRoot[] = browserRoots()
 ): Promise<ImportSource[]> {
   const sources = await Promise.all(roots.map((r) => scanSource(r, installed).catch(() => null)))
   return sources.filter((s): s is ImportSource => s !== null)
 }
 
-/** The last-used profile of one browser, or null when there is nothing to import. */
-export async function scanSource({ browser, root }: ImportRoot, installed: ReadonlySet<string>): Promise<ImportSource | null> {
-  const profile = await lastUsedProfile(root)
-  if (!profile) return null
-  const profileDir = join(root, profile.dir)
+/**
+ * One profile of one browser — the last-used one unless `profile` names
+ * another — or null when there is nothing to import.
+ */
+export async function scanSource(
+  { browser, root }: BrowserRoot,
+  installed: ReadonlySet<string>,
+  profile?: BrowserProfile
+): Promise<ImportSource | null> {
+  const resolved = await resolveRoot(root)
+  if (!resolved) return null
+  const chosen = profile ?? (await lastUsedProfile(resolved))
+  if (!chosen) return null
+  const profileDir = join(resolved, chosen.dir)
 
   // Chromium splits extension settings between the two files (Secure
   // Preferences holds the MAC-protected part); merge them per id.
@@ -126,7 +118,7 @@ export async function scanSource({ browser, root }: ImportRoot, installed: Reado
   }
   if (extensions.length === 0) return null
   extensions.sort((a, b) => a.name.localeCompare(b.name, 'en', { sensitivity: 'base' }))
-  return { id: browser, browserName: BROWSERS[browser].name, root, profileDir: profile.dir, profileName: profile.name, extensions }
+  return { id: browser, browserName: browserName(browser), root: resolved, profileDir: chosen.dir, profileName: chosen.name, extensions }
 }
 
 export function summarize(source: ImportSource): ImportSourceSummary {
@@ -158,15 +150,6 @@ export function skipReasonText(c: ImportCandidate, browser: string, t: Translate
 }
 
 // -- internals ---------------------------------------------------------------
-
-async function lastUsedProfile(root: string): Promise<{ dir: string; name: string } | null> {
-  const profile = asObject((await readJsonObject(join(root, 'Local State')))?.profile)
-  const lastUsed = profile?.last_used
-  const dir = typeof lastUsed === 'string' && isPlainSegment(lastUsed) ? lastUsed : 'Default'
-  if (!(await isDirectory(join(root, dir)))) return null
-  const name = asObject(asObject(profile?.info_cache)?.[dir])?.name
-  return { dir, name: typeof name === 'string' && name.trim() ? name.trim() : dir }
-}
 
 async function readCandidate(
   id: string,
@@ -227,29 +210,4 @@ function isEnabled(entry: Record<string, unknown>): boolean {
   if (Array.isArray(reasons)) return reasons.length === 0
   if (typeof reasons === 'number') return reasons === 0
   return entry.state !== 0
-}
-
-async function readJsonObject(path: string): Promise<Record<string, unknown> | null> {
-  try {
-    return asObject(JSON.parse(await readFile(path, 'utf8')))
-  } catch {
-    return null
-  }
-}
-
-function asObject(value: unknown): Record<string, unknown> | null {
-  return value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : null
-}
-
-/** A single folder name: no separators, not `.` / `..`. */
-function isPlainSegment(name: string): boolean {
-  return name !== '' && name !== '.' && name !== '..' && !name.includes('/')
-}
-
-async function isDirectory(path: string): Promise<boolean> {
-  try {
-    return (await stat(path)).isDirectory()
-  } catch {
-    return false
-  }
 }

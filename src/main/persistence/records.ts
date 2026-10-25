@@ -1,4 +1,4 @@
-import type { FolderId, ProfileId, SpaceId, TabId } from '@shared/types'
+import type { FolderId, ProfileId, SpaceId, SpaceTheme, TabId } from '@shared/types'
 
 /** Serialized back/forward stack, as produced by `navigationHistory.getAllEntries()`. */
 export interface NavState {
@@ -40,6 +40,7 @@ export interface SpaceRecord {
   name: string
   icon: string
   color: string
+  theme: SpaceTheme
   sortOrder: number
   profileId: ProfileId
   activeTabId: TabId | null

@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { translator } from '@shared/i18n'
-import { importRoots, scanImportSources, scanSource, skipReasonText, summarize } from '../../src/main/extensions/browser-import'
+import { scanImportSources, scanSource, skipReasonText, summarize } from '../../src/main/extensions/browser-import'
 import { compareVersions, resolveExtensionSource } from '../../src/main/extensions/installer'
 
 // Fake Chromium "User Data" tree: Local State, Preferences + Secure
@@ -181,7 +181,7 @@ describe('scanSource', () => {
       writeJson(join(other, 'Default', 'Extensions', id('j'), '1.0_0', 'manifest.json'), mv3('Chrome Ext', '1.0'))
       writeJson(join(other, 'Default', 'Preferences'), { extensions: { settings: { [id('j')]: { location: 1 } } } })
       const source = await scanSource({ browser: 'chrome', root: other }, new Set())
-      expect(source).toMatchObject({ id: 'chrome', browserName: 'Chrome', profileDir: 'Default', profileName: 'Default' })
+      expect(source).toMatchObject({ id: 'chrome', browserName: 'Google Chrome', profileDir: 'Default', profileName: 'Default' })
       expect(source!.extensions.map((e) => e.name)).toEqual(['Chrome Ext'])
       // Missing roots are skipped, not errors.
       expect(await scanImportSources(new Set(), [{ browser: 'arc', root: join(other, 'nope') }])).toEqual([])
@@ -191,13 +191,3 @@ describe('scanSource', () => {
   })
 })
 
-describe('importRoots', () => {
-  it('uses ARC_IMPORT_ROOT alone, nothing under ARC_TEST, else Arc and Chrome', () => {
-    expect(importRoots({ ARC_IMPORT_ROOT: '/fake' }, '/Users/x')).toEqual([{ browser: 'arc', root: '/fake' }])
-    expect(importRoots({ ARC_TEST: '1' }, '/Users/x')).toEqual([])
-    expect(importRoots({}, '/Users/x')).toEqual([
-      { browser: 'arc', root: '/Users/x/Library/Application Support/Arc/User Data' },
-      { browser: 'chrome', root: '/Users/x/Library/Application Support/Google/Chrome' }
-    ])
-  })
-})

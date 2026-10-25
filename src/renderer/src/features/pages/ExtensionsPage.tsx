@@ -163,7 +163,7 @@ export default function ExtensionsPage() {
         {t('extensions.page.intro')}
       </p>
       {extensions.length === 0 ? (
-        <EmptyNote icon="puzzle">{t('extensions.page.empty')}</EmptyNote>
+        <EmptyNote art="extensions" title={t('extensions.page.empty')} hint={t('extensions.page.emptyHint')} />
       ) : (
         <div className="flex flex-col gap-3">
           {extensions.map((ext) => (

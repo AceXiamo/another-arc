@@ -29,6 +29,9 @@ export default function HistoryPage() {
   const [query, setQuery] = useState('')
   const [entries, setEntries] = useState<HistoryEntry[]>([])
   const [done, setDone] = useState(false)
+  // False until the first page for the current query arrives, so the empty
+  // state never flashes while loading.
+  const [loaded, setLoaded] = useState(false)
   // Paging state lives in refs so the IntersectionObserver never reads a
   // stale cursor from an old closure.
   const cursor = useRef(Number.MAX_SAFE_INTEGER)
@@ -40,15 +43,19 @@ export default function HistoryPage() {
     if (loading.current) return
     loading.current = true
     const gen = generation.current
+    const first = cursor.current === Number.MAX_SAFE_INTEGER
     try {
       const page = await rpc('history.list', query, cursor.current, PAGE)
       if (gen !== generation.current) return
       const last = page[page.length - 1]
       if (last) cursor.current = last.visitedAt
-      setEntries((prev) => [...prev, ...page])
+      // The first page replaces the list: while typing, old results stay up
+      // until the new ones arrive instead of blinking out.
+      setEntries((prev) => (first ? page : [...prev, ...page]))
       setDone(page.length < PAGE)
+      setLoaded(true)
     } finally {
-      loading.current = false
+      if (gen === generation.current) loading.current = false
     }
   }, [query])
 
@@ -56,7 +63,6 @@ export default function HistoryPage() {
     generation.current += 1
     cursor.current = Number.MAX_SAFE_INTEGER
     loading.current = false
-    setEntries([])
     setDone(false)
     void loadMore()
   }, [loadMore])
@@ -83,15 +89,30 @@ export default function HistoryPage() {
         </SmallButton>
       }
     >
-      <label className="flex h-9 items-center gap-2 rounded-[10px] bg-[var(--surface-2)] px-3 shadow-[var(--card-shadow)] focus-within:shadow-[inset_0_0_0_1px_var(--focus),0_0_0_3px_color-mix(in_oklch,var(--space)_18%,transparent)]">
+      <label className="flex h-9 items-center gap-2 rounded-[10px] bg-[var(--surface-2)] pl-3 pr-1.5 shadow-[var(--card-shadow)] focus-within:shadow-[inset_0_0_0_1px_var(--focus),0_0_0_3px_color-mix(in_oklch,var(--space)_18%,transparent)]">
         <Icon name="search" size={15} className="text-[var(--ink)]" />
         <input
           value={query}
           onChange={(e) => setQuery(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Escape' && query) {
+              e.preventDefault()
+              setQuery('')
+            }
+          }}
           placeholder={t('history.searchPlaceholder')}
           spellCheck={false}
           className="h-full min-w-0 flex-1 bg-transparent outline-none"
         />
+        {query && (
+          <button
+            title={t('history.clearSearch')}
+            onClick={() => setQuery('')}
+            className="grid h-6 w-6 shrink-0 place-items-center rounded-[6px] text-[var(--ink)] hover:bg-[var(--hover)] hover:text-[var(--ink-strong)] active:bg-[var(--press)]"
+          >
+            <Icon name="close" size={13} strokeWidth={1.8} />
+          </button>
+        )}
       </label>
       <div className="-mt-3 flex flex-col">
         {entries.map((e) => {
@@ -101,11 +122,11 @@ export default function HistoryPage() {
           return (
             <div key={e.id}>
               {header && (
-                <div className="mb-1 mt-5 px-2 text-[12px] font-semibold text-[var(--text-2)]">
+                <h2 className="sticky top-0 z-10 -mx-1 mb-1 mt-4 bg-[var(--surface)] px-3 pb-1 pt-2 text-[12px] font-semibold text-[var(--text-2)]">
                   {day}
-                </div>
+                </h2>
               )}
-              <div className="group flex h-9 items-center gap-3 rounded-[8px] px-2 hover:bg-[var(--hover)]">
+              <div className="group flex h-9 items-center gap-3 rounded-[8px] px-2 hover:bg-[var(--hover)] has-[button:active]:bg-[var(--press)]">
                 {/* 12-hour times ("10:14 PM") need a wider column than "22:14". */}
                 <span
                   className={`${locale === 'zh-CN' ? 'w-10' : 'w-[58px]'} shrink-0 whitespace-nowrap text-[12px] tabular-nums text-[var(--text-3)]`}
@@ -113,13 +134,22 @@ export default function HistoryPage() {
                   {new Date(e.visitedAt).toLocaleTimeString(dateLocale(locale), { hour: '2-digit', minute: '2-digit' })}
                 </span>
                 <Favicon url={e.url} favicon={null} title={e.title} />
-                <button className="min-w-0 flex-1 truncate text-left" onClick={() => send('tabs.create', { url: e.url })}>
-                  {e.title || displayUrl(e.url)}
-                  <span className="ml-2 text-[12px] text-[var(--text-3)]">{displayUrl(e.url)}</span>
+                <button
+                  className="flex min-w-0 flex-1 items-baseline gap-2 text-left"
+                  title={e.url}
+                  onClick={() => send('tabs.create', { url: e.url })}
+                >
+                  {/* The title never shrinks (any shrink would ellipsize it); the URL gives way first. */}
+                  <span className="max-w-full shrink-0 truncate text-[var(--text-1)] group-hover:text-[var(--text)]">
+                    {e.title || displayUrl(e.url)}
+                  </span>
+                  {e.title && (
+                    <span className="min-w-0 truncate text-[12px] text-[var(--text-3)]">{displayUrl(e.url)}</span>
+                  )}
                 </button>
                 <button
                   title={t('common.delete')}
-                  className="grid h-6 w-6 shrink-0 place-items-center rounded-[6px] text-[var(--ink)] opacity-0 hover:bg-[var(--press)] hover:text-[var(--ink-strong)] group-hover:opacity-100"
+                  className="grid h-6 w-6 shrink-0 place-items-center rounded-[6px] text-[var(--ink)] opacity-0 hover:bg-[var(--press)] hover:text-[var(--ink-strong)] focus-visible:opacity-100 group-hover:opacity-100"
                   onClick={() => {
                     send('history.delete', [e.id])
                     setEntries((list) => list.filter((x) => x.id !== e.id))
@@ -131,9 +161,17 @@ export default function HistoryPage() {
             </div>
           )
         })}
-        {entries.length === 0 && (
-          <div className="mt-3">
-            <EmptyNote icon={query ? 'search' : 'history'}>{query ? t('history.noMatches') : t('history.empty')}</EmptyNote>
+        {loaded && entries.length === 0 && (
+          <EmptyNote
+            art={query ? 'no-results' : 'history'}
+            title={query ? t('history.noMatches') : t('history.empty')}
+            hint={query ? t('history.noMatchesHint') : t('history.emptyHint')}
+          />
+        )}
+        {!loaded && (
+          <div className="grid place-items-center py-16">
+            {/* Shows only if loading takes noticeably long. */}
+            <span className="spinner [animation:spin_0.7s_linear_infinite,fade-in_0.2s_ease-out_0.4s_backwards]" />
           </div>
         )}
         <div ref={sentinel} className="h-4" />

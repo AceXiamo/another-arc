@@ -59,7 +59,7 @@ export function buildAppMenu(run: CommandRunner, opts: { isDev: boolean; t: Tran
         { type: 'separator' },
         item(t('menu.openLocation'), 'address.focus'),
         { type: 'separator' },
-        item(t('menu.importArc'), 'import.arc'),
+        item(t('menu.importBrowser'), 'import.browser'),
         { type: 'separator' },
         item(t('menu.closeTab'), 'tab.close'),
         item(t('menu.closeWindow'), 'window.close')

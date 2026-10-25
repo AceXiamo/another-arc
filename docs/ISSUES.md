@@ -6,7 +6,7 @@
 |---|---|---|
 | `webRequest` 事件不派发给扩展 | uBlock Origin（MV2）、CocoCut、Wappalyzer 部分检测 | 改用 DNR 类扩展（uBlock Origin Lite）。自研 webRequest 桥接需要用 `session.webRequest` 代理，而它只允许一个监听者，还会和 DNR 冲突，暂不做 |
 | `chrome.userScripts` 未实现 | Tampermonkey、Violentmonkey | 可以用兼容层 + `scripting.registerContentScripts` 实现子集；优先级视需求而定 |
-| `chrome.sidePanel` 未实现 | OKX Wallet、ChatGPT、部分钱包 | 可以在侧边栏或浮层里渲染扩展页面来模拟，工作量中等 |
+| `chrome.sidePanel` 是模拟的（面板显示在扩展窗口里） | OKX Wallet、MetaMask、Bitget 等钱包 | 已可用。限制：只有一个浏览器窗口，`windowId` 被忽略；面板不随标签切换（按标签的选项只在打开时读取）；`open()` 不要求用户手势 |
 | `chrome.identity` 未实现 | Phantom 等需要 OAuth 的扩展 | `getRedirectURL` / `launchWebAuthFlow` 可以用弹窗模拟 |
 | `tabs.captureVisibleTab`、`tabCapture`、`desktopCapture` | 截图、录屏类 | `captureVisibleTab` 可以用 `webContents.capturePage` 补，成本低，建议下一步做 |
 | `chrome.tts`、`chrome.fontSettings`、`chrome.debugger`、`history`、`bookmarks` | 朗读、字体、开发类 | 按需评估 |

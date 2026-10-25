@@ -1,4 +1,5 @@
 import { Icon } from '../../components/Icon'
+import { Illustration, type IllustrationName } from '../../components/Illustration'
 
 export function PageLayout({
   title,
@@ -123,9 +124,9 @@ export function SmallButton({
     <button
       disabled={disabled}
       onClick={onClick}
-      className={`h-7 shrink-0 rounded-[7px] px-2.5 text-[12px] font-medium disabled:opacity-40 disabled:hover:bg-transparent ${
+      className={`h-7 shrink-0 rounded-[7px] px-2.5 text-[12px] font-medium transition-[scale,background-color,color] duration-150 ease-out enabled:active:scale-[0.96] disabled:opacity-40 disabled:hover:bg-transparent ${
         danger
-          ? 'text-[var(--danger)] hover:bg-[var(--danger-soft)]'
+          ? 'text-[var(--danger)] hover:bg-[var(--danger-soft)] active:bg-[color-mix(in_oklab,var(--danger)_18%,transparent)]'
           : 'text-[var(--text-2)] hover:bg-[var(--hover)] hover:text-[var(--text)] active:bg-[var(--press)]'
       }`}
     >
@@ -138,19 +139,20 @@ export function PrimaryButton({ children, onClick }: { children: React.ReactNode
   return (
     <button
       onClick={onClick}
-      className="flex h-[30px] shrink-0 items-center gap-1.5 rounded-[8px] bg-[var(--accent-fill)] px-3 text-[12.5px] font-medium text-white hover:brightness-110 active:brightness-95"
+      className="flex h-[30px] shrink-0 items-center gap-1.5 rounded-[8px] bg-[var(--accent-fill)] px-3 text-[12.5px] font-medium text-white transition-[scale,filter] duration-150 ease-out hover:brightness-110 active:scale-[0.96] active:brightness-95"
     >
       {children}
     </button>
   )
 }
 
-/** Quiet placeholder for empty lists. */
-export function EmptyNote({ icon, children }: { icon?: React.ComponentProps<typeof Icon>['name']; children: React.ReactNode }) {
+/** Empty list: a spot illustration, a short heading and an optional hint. */
+export function EmptyNote({ art, title, hint }: { art: IllustrationName; title: string; hint?: string }) {
   return (
-    <div className="flex flex-col items-center gap-2.5 rounded-[12px] border border-dashed border-[var(--line)] py-12 text-[var(--text-3)]">
-      {icon && <Icon name={icon} size={26} strokeWidth={1.4} className="text-[var(--ink-faint)]" />}
-      <div>{children}</div>
+    <div className="anim-fade flex flex-col items-center px-6 pb-10 pt-12 text-center">
+      <Illustration name={art} />
+      <div className="mt-5 text-balance text-[14px] font-medium text-[var(--text-1)]">{title}</div>
+      {hint && <p className="mt-1 max-w-[340px] text-pretty text-[12.5px] leading-relaxed text-[var(--text-3)]">{hint}</p>}
     </div>
   )
 }

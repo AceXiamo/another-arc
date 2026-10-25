@@ -4,6 +4,11 @@ const CHANNEL_EVENT = 'arc-compat:event'
 const CHANNEL_STORAGE = 'arc-compat:storage'
 const CHANNEL_LISTENER = 'arc-compat:listener'
 const CHANNEL_CONTEXTS = 'arc-compat:getContexts'
+const CHANNEL_SIDE_PANEL = 'arc-compat:sidePanel'
+const CHANNEL_SIDE_PANEL_EVENT = 'arc-compat:sidePanelEvent'
+/** Listener registrations reach main as IPC sent during the worker's first run; let them land. */
+const LISTENER_SETTLE_MS = 150
+const WAKE_TIMEOUT_MS = 4000
 /**
  * Synthetic events do not extend a worker's lifetime the way native extension
  * events do; keep it alive briefly so listeners can finish async work.
@@ -27,6 +32,13 @@ export interface ContextHost {
   /** Tab id (WebContents id) when `wc` is one of our tabs. */
   isTab(wc: WebContents): boolean
   mainWindowId(): number
+  /** The context type of `wc` when it is shown in one of our extension windows. */
+  surfaceOf(wc: WebContents): 'POPUP' | 'SIDE_PANEL' | null
+}
+
+/** Main-process implementation of chrome.sidePanel (see side-panel.ts). */
+export interface SidePanelBackend {
+  call(id: string, method: string, arg: unknown): unknown
 }
 
 export interface InstalledDetails {
@@ -36,8 +48,9 @@ export interface InstalledDetails {
 
 /**
  * Main-process half of src/preload/extension-compat.ts: delivers
- * runtime.onInstalled / onStartup and forwards extension-page storage
- * changes to the extension's service worker.
+ * runtime.onInstalled / onStartup, forwards extension-page storage changes
+ * to the extension's service worker, answers runtime.getContexts and
+ * carries chrome.sidePanel calls to the side panel backend.
  */
 export class ExtensionCompat {
   private readonly pendingInstalled = new Map<string, InstalledDetails>()
@@ -45,6 +58,7 @@ export class ExtensionCompat {
   private readonly hooked = new WeakSet<ServiceWorkerMain>()
   private readonly startupListeners: Set<string>
   private installed = false
+  private earlyInstalled = false
   private readonly keepAlive = new Set<{ end(): void }>()
 
   constructor(
@@ -52,12 +66,27 @@ export class ExtensionCompat {
     private readonly preloadPath: string,
     startupListeners: string[],
     private readonly persistStartupListeners: (ids: string[]) => void,
-    private readonly contextHost: ContextHost
+    private readonly contextHost: ContextHost,
+    private readonly sidePanel: SidePanelBackend
   ) {
     this.startupListeners = new Set(startupListeners)
   }
 
-  /** Register preloads and listeners. Must run before extensions load. */
+  /**
+   * Register the early pass of the compat preload. Must run before
+   * electron-chrome-extensions registers its own preload: that one freezes
+   * `chrome`, so chrome.sidePanel can only be added before it. Session
+   * preloads run in registration order; the same file runs again after the
+   * library (see `install`) and tells the two passes apart itself.
+   */
+  installEarly(): void {
+    if (this.earlyInstalled) return
+    this.earlyInstalled = true
+    this.ses.registerPreloadScript({ id: 'arc-ext-compat-early-frame', type: 'frame', filePath: this.preloadPath })
+    this.ses.registerPreloadScript({ id: 'arc-ext-compat-early-sw', type: 'service-worker', filePath: this.preloadPath })
+  }
+
+  /** Register the late preload pass and listeners. Must run before extensions load. */
   install(): void {
     if (this.installed) return
     this.installed = true
@@ -79,6 +108,11 @@ export class ExtensionCompat {
       return id ? this.contexts(id, filter) : []
     })
 
+    ipcMain.handle(CHANNEL_SIDE_PANEL, (event, method: unknown, arg: unknown) => {
+      const id = event.sender.session === this.ses ? extensionIdOf(event.senderFrame?.url ?? '') : null
+      return id && typeof method === 'string' ? this.sidePanel.call(id, method, arg) : undefined
+    })
+
     ipcMain.on(CHANNEL_STORAGE, (event: IpcMainEvent, area: unknown, changes: unknown) => {
       if (event.sender.session !== this.ses || typeof area !== 'string' || !changes || typeof changes !== 'object') return
       const id = extensionIdOf(event.senderFrame?.url ?? '')
@@ -90,6 +124,32 @@ export class ExtensionCompat {
   markInstalled(id: string, details: InstalledDetails): void {
     this.pendingInstalled.set(id, details)
     void this.wake(id)
+  }
+
+  /**
+   * Start the extension's worker if it has not run yet this session, so its
+   * event listeners (and the action popup or panel behavior it sets at
+   * start-up) are in place before an event is routed to it.
+   */
+  async ensureStarted(id: string): Promise<void> {
+    if (!this.hasWorker(id) || this.startedThisSession.has(id)) return
+    await Promise.race([this.wake(id), new Promise((r) => setTimeout(r, WAKE_TIMEOUT_MS).unref())])
+    await new Promise((r) => setTimeout(r, LISTENER_SETTLE_MS))
+  }
+
+  /** chrome.sidePanel.onOpened / onClosed: to the running worker and the extension's open pages. */
+  sidePanelEvent(id: string, name: 'onOpened' | 'onClosed', payload: unknown): void {
+    const prefix = `chrome-extension://${id}/`
+    for (const [versionId, info] of Object.entries(this.ses.serviceWorkers.getAllRunning())) {
+      if (!info.scope.startsWith(prefix)) continue
+      const worker = this.ses.serviceWorkers.getWorkerFromVersionID(Number(versionId))
+      if (worker && !worker.isDestroyed()) worker.send(CHANNEL_SIDE_PANEL_EVENT, name, payload)
+    }
+    for (const wc of webContents.getAllWebContents()) {
+      if (!wc.isDestroyed() && wc.session === this.ses && wc.getURL().startsWith(prefix)) {
+        wc.send(CHANNEL_SIDE_PANEL_EVENT, name, payload)
+      }
+    }
   }
 
   /** Wake extensions known to listen for runtime.onStartup. */
@@ -134,6 +194,9 @@ export class ExtensionCompat {
       }
     })
     worker.ipc.handle(CHANNEL_CONTEXTS, (_event, filter: unknown) => this.contexts(id, filter))
+    worker.ipc.handle(CHANNEL_SIDE_PANEL, (_event, method: unknown, arg: unknown) =>
+      typeof method === 'string' ? this.sidePanel.call(id, method, arg) : undefined
+    )
   }
 
   /** chrome.runtime.getContexts() for one extension, built from what we track. */
@@ -149,19 +212,23 @@ export class ExtensionCompat {
       const url = wc.getURL()
       if (!url.startsWith(prefix)) continue
       const isTab = this.contextHost.isTab(wc)
-      const popup = !isTab && BrowserWindow.fromWebContents(wc)
+      // Our extension windows belong to the browser window, as in Chrome.
+      const surface = isTab ? null : this.contextHost.surfaceOf(wc)
+      const popup = !isTab && !surface && BrowserWindow.fromWebContents(wc)
       const contextType: ExtensionContext['contextType'] = isTab
         ? 'TAB'
-        : wc.getType() === 'backgroundPage'
-          ? 'BACKGROUND'
-          : popup
-            ? 'POPUP'
-            : 'OFFSCREEN_DOCUMENT'
+        : surface
+          ? surface
+          : wc.getType() === 'backgroundPage'
+            ? 'BACKGROUND'
+            : popup
+              ? 'POPUP'
+              : 'OFFSCREEN_DOCUMENT'
       out.push({
         contextType,
         contextId: `wc-${wc.id}`,
         tabId: isTab ? wc.id : -1,
-        windowId: isTab ? this.contextHost.mainWindowId() : popup ? popup.id : -1,
+        windowId: isTab || surface ? this.contextHost.mainWindowId() : popup ? popup.id : -1,
         documentId: `doc-${wc.id}-${wc.mainFrame.processId}-${wc.mainFrame.routingId}`,
         frameId: 0,
         documentUrl: url,

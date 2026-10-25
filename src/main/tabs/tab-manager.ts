@@ -15,6 +15,7 @@ import type { CreateFolderOptions, MoveFolderOptions, MoveTabOptions, SpaceInput
 import { type Locale, LOCALES, translate } from '@shared/i18n'
 import type { FolderId, FolderState, SpaceId, TabId, TabState } from '@shared/types'
 import { isSavedTab } from '@shared/tabs'
+import { sanitizeSpaceTheme, themesEqual } from '@shared/theme'
 import { isInternalUrl, originOf, resolveInput, searchTemplate, tabPresentsView } from '@shared/url'
 import type { FaviconCache } from '../history/favicon-cache'
 import type { HistoryService } from '../history/history-service'
@@ -52,6 +53,8 @@ export interface TabManagerDelegate {
   runtimeDestroyed(wc: WebContents): void
   activeChanged(wc: WebContents | null): void
   htmlFullscreen(on: boolean): void
+  /** The active space or its color / theme changed (the window background follows it). */
+  activeThemeChanged?(): void
 }
 
 export interface TabManagerDeps {
@@ -191,6 +194,7 @@ export class TabManager implements TabRuntimeHost {
       name: s.name,
       icon: s.icon,
       color: s.color,
+      theme: s.theme,
       profileId: s.profileId,
       pinnedTabIds: [],
       savedIds: [],
@@ -228,6 +232,8 @@ export class TabManager implements TabRuntimeHost {
     const order = new Map<string, number>()
     for (const r of [...tabs, ...folders]) order.set(r.id, r.sortOrder)
     this.model.load(spaceData, tabData, activeSpaceId, folderData, (id) => order.get(id) ?? 0)
+    // Favorites stored before they kept a saved page got one on load; persist it.
+    for (const t of tabs) if (t.pinned && !t.savedUrl) this.deps.persister.markTab(t.id)
     if (this.model.spaces.size === 0) {
       const { nameKey, icon, color } = DEFAULT_SPACE
       this.createSpace({ name: translate(this.deps.settings.get().language, nameKey), icon, color })
@@ -300,6 +306,7 @@ export class TabManager implements TabRuntimeHost {
       name: s.name,
       icon: s.icon,
       color: s.color,
+      theme: s.theme,
       sortOrder: this.model.spaceOrder.indexOf(id),
       profileId: s.profileId,
       activeTabId: s.activeTabId,
@@ -444,10 +451,14 @@ export class TabManager implements TabRuntimeHost {
       url: closed.url,
       title: closed.title,
       favicon: closed.favicon,
-      pinned: closed.pinned && !saved,
+      pinned: closed.pinned,
       navState: closed.navState,
       ...(saved
-        ? { folderId: inFolder ? closed.folderId : null, savedUrl: closed.savedUrl, savedTitle: closed.savedTitle }
+        ? {
+            folderId: inFolder && !closed.pinned ? closed.folderId : null,
+            savedUrl: closed.savedUrl,
+            savedTitle: closed.savedTitle
+          }
         : {})
     })
     if (!isInternalUrl(tab.url)) this.spawnRuntime(tab).load(tab)
@@ -487,12 +498,13 @@ export class TabManager implements TabRuntimeHost {
     saved?: boolean
     folderId?: FolderId | null
   }): TabId {
-    const saved = init.saved === true || !!init.folderId
+    const pinned = init.pinned === true && !init.saved && !init.folderId
+    const saved = init.saved === true || !!init.folderId || pinned
     const tab = newTabData({
       spaceId: init.spaceId,
       url: init.url,
       title: init.title,
-      pinned: !saved && init.pinned === true,
+      pinned,
       folderId: init.folderId ?? null,
       savedUrl: saved ? init.url : '',
       savedTitle: saved ? init.title : ''
@@ -561,7 +573,8 @@ export class TabManager implements TabRuntimeHost {
   toggleSaved(tabId: TabId): void {
     const tab = this.model.getTab(tabId)
     const space = tab && this.model.getSpace(tab.spaceId)
-    if (!tab || !space) return
+    // Favorites stay favorites; they leave through "Remove from Favorites".
+    if (!tab || !space || tab.pinned) return
     if (isSavedTab(tab)) this.model.moveTab(tabId, { spaceId: space.id, pinned: false, index: 0 })
     else this.model.moveTab(tabId, { spaceId: space.id, pinned: false, saved: true, index: space.savedIds.length })
   }
@@ -702,6 +715,7 @@ export class TabManager implements TabRuntimeHost {
       name: input.name.slice(0, LIMITS.spaceName) || translate(this.deps.settings.get().language, 'space.untitled'),
       icon: input.icon.slice(0, LIMITS.spaceIcon) || '•',
       color: input.color,
+      theme: sanitizeSpaceTheme(input.theme),
       profileId: DEFAULT_PROFILE_ID,
       pinnedTabIds: [],
       savedIds: [],
@@ -713,13 +727,19 @@ export class TabManager implements TabRuntimeHost {
   }
 
   updateSpace(id: SpaceId, input: Partial<SpaceInput>): void {
-    const patch: Partial<SpaceInput> = {}
+    const patch: Partial<Pick<SpaceData, 'name' | 'icon' | 'color' | 'theme'>> = {}
     if (input.name !== undefined) {
       patch.name = input.name.slice(0, LIMITS.spaceName) || translate(this.deps.settings.get().language, 'space.untitled')
     }
     if (input.icon !== undefined) patch.icon = input.icon.slice(0, LIMITS.spaceIcon) || '•'
     if (input.color !== undefined) patch.color = input.color
-    this.model.updateSpace(id, patch)
+    const current = this.model.getSpace(id)
+    if (input.theme !== undefined && current) {
+      // A partial theme is merged over the current one; unchanged themes are not re-sent.
+      const theme = sanitizeSpaceTheme({ ...current.theme, ...input.theme }, current.theme)
+      if (!themesEqual(theme, current.theme)) patch.theme = theme
+    }
+    if (Object.keys(patch).length > 0) this.model.updateSpace(id, patch)
   }
 
   /**
@@ -1164,6 +1184,7 @@ export class TabManager implements TabRuntimeHost {
           else persister.markTab(itemId)
         }
         if ('activeTabId' in patch && id === activeSpace()) this.schedulePresent()
+        if (('color' in patch || 'theme' in patch) && id === activeSpace()) this.delegate?.activeThemeChanged?.()
       },
       spaceRemoved: (id) => {
         shell.space(id, null)
@@ -1195,6 +1216,7 @@ export class TabManager implements TabRuntimeHost {
         shell.window({ activeSpaceId: id })
         persister.setSetting('session.activeSpaceId', id)
         this.schedulePresent()
+        this.delegate?.activeThemeChanged?.()
       }
     }
   }

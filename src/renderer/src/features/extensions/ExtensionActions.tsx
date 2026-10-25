@@ -1,13 +1,16 @@
 import { memo, useEffect, useMemo, useState } from 'react'
 import type { ActionState, ExtensionAction } from '../../../../preload/api'
 import { Icon } from '../../components/Icon'
+import { useT } from '../../lib/i18n'
 import { send } from '../../lib/rpc'
 import { selectActiveTab, useBrowser } from '../../stores/browser'
 
 /**
  * Pinned extension action buttons. State comes from electron-chrome-extensions'
  * browserAction API through the preload bridge; we render our own buttons so
- * pinning, ordering and styling stay under the shell's control.
+ * pinning, ordering and styling stay under the shell's control. A click opens
+ * the extension's popup or side panel in its own window (main routes it); a
+ * second click closes that window.
  */
 export function ExtensionActions() {
   const partition = useBrowser((s) => s.extensionPartition)
@@ -17,6 +20,7 @@ export function ExtensionActions() {
     () => extensions.filter((e) => e.enabled && e.pinned && e.hasAction).map((e) => e.id),
     [extensions]
   )
+  const open = useMemo(() => new Set(extensions.filter((e) => e.windowOpen).map((e) => e.id)), [extensions])
   const [state, setState] = useState<ActionState | null>(null)
   const wanted = pinned.length > 0
 
@@ -59,7 +63,13 @@ export function ExtensionActions() {
   return (
     <div className="flex flex-wrap gap-0.5">
       {actions.map((a) => (
-        <ActionButton key={a.id} action={a} tabId={state.activeTabId ?? -1} partition={partition} />
+        <ActionButton
+          key={a.id}
+          action={a}
+          tabId={state.activeTabId ?? -1}
+          partition={partition}
+          windowOpen={open.has(a.id)}
+        />
       ))}
     </div>
   )
@@ -68,12 +78,15 @@ export function ExtensionActions() {
 const ActionButton = memo(function ActionButton({
   action,
   tabId,
-  partition
+  partition,
+  windowOpen
 }: {
   action: ExtensionAction
   tabId: number
   partition: string
+  windowOpen: boolean
 }) {
+  const t = useT()
   const info = { ...action, ...(action.tabs[String(tabId)] ?? {}) }
   const params = new URLSearchParams({ tabId: String(tabId), partition })
   if (info.iconModified) params.set('t', String(info.iconModified))
@@ -91,20 +104,25 @@ const ActionButton = memo(function ActionButton({
         extensionId: action.id,
         tabId,
         alignment: 'bottom right',
-        anchorRect: { x: r.left, y: r.top, width: r.width, height: r.height }
+        anchorRect: { x: r.left, y: r.top, width: r.width, height: r.height },
+        // A toolbar click: closes the extension's window when it is open.
+        toggle: true
       })
       .catch(() => undefined)
   }
 
   return (
     <button
-      title={info.title ?? ''}
+      title={windowOpen ? t('extWindow.button.openTitle', { title: info.title ?? '' }) : (info.title ?? '')}
+      aria-pressed={windowOpen}
       onClick={activate}
       onContextMenu={(e) => {
         e.preventDefault()
         send('extensions.contextMenu', action.id, { x: e.clientX, y: e.clientY })
       }}
-      className="relative grid h-7 w-7 place-items-center rounded-[7px] hover:bg-[var(--sb-hover)] active:bg-[var(--sb-press)]"
+      className={`relative grid h-7 w-7 place-items-center rounded-[7px] active:bg-[var(--sb-press)] ${
+        windowOpen ? 'bg-[var(--sb-active)]' : 'hover:bg-[var(--sb-hover)]'
+      }`}
     >
       <img
         src={icon}

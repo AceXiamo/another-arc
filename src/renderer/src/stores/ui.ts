@@ -39,6 +39,12 @@ interface UiState {
   findOpen: boolean
   /** Space being created (`'new'`) or edited (its id). */
   spaceEditor: SpaceId | 'new' | null
+  /**
+   * The editor's theme panel, floating beside the sidebar: next to the space
+   * card (`'attached'`), or on its own with Cancel / Save (`'standalone'`,
+   * from "Edit Theme…").
+   */
+  themePanel: 'attached' | 'standalone' | null
   /** Folder whose name is being edited inline in the sidebar. */
   renamingFolder: FolderId | null
   /** Collapsed sidebar temporarily revealed by hovering the window edge. */
@@ -51,6 +57,7 @@ export const useUi = create<UiState>()(() => ({
   palette: null,
   findOpen: false,
   spaceEditor: null,
+  themePanel: null,
   renamingFolder: null,
   peek: false,
   drag: null,

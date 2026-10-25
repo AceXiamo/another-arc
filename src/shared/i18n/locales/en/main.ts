@@ -13,7 +13,7 @@ export default {
   'menu.newTab': 'New Tab',
   'menu.reopenTab': 'Reopen Closed Tab',
   'menu.openLocation': 'Open Location…',
-  'menu.importArc': 'Import from Arc…',
+  'menu.importBrowser': 'Import from Browser…',
   'menu.closeTab': 'Close Tab',
   'menu.closeWindow': 'Close Window',
   'menu.edit': 'Edit',

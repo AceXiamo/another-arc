@@ -111,13 +111,13 @@ export class BrowserModel {
       if (!space) continue
       // A tab whose folder is gone stays saved, at the top level.
       if (t.folderId && this.folders.get(t.folderId)?.spaceId !== t.spaceId) t.folderId = null
+      if (t.folderId) t.pinned = false
+      // Favorites saved before they were bookmarks: their page is the saved one.
+      if (t.pinned && !t.savedUrl) Object.assign(t, { savedUrl: t.url, savedTitle: t.title })
       this.tabs.set(t.id, t)
-      if (isSavedTab(t)) {
-        t.pinned = false
-        childList(t.folderId ?? `space:${t.spaceId}`).push(t.id)
-      } else {
-        ;(t.pinned ? space.pinnedTabIds : space.tabIds).push(t.id)
-      }
+      if (t.pinned) space.pinnedTabIds.push(t.id)
+      else if (isSavedTab(t)) childList(t.folderId ?? `space:${t.spaceId}`).push(t.id)
+      else space.tabIds.push(t.id)
     }
     const byOrder = (a: string, b: string) => sortOrder(a) - sortOrder(b)
     for (const [key, ids] of children) {
@@ -231,7 +231,7 @@ export class BrowserModel {
     if (!this.activeSpaceId) this.setActiveSpace(record.id)
   }
 
-  updateSpace(id: SpaceId, patch: Partial<Pick<SpaceData, 'name' | 'icon' | 'color'>>): void {
+  updateSpace(id: SpaceId, patch: Partial<Pick<SpaceData, 'name' | 'icon' | 'color' | 'theme'>>): void {
     const space = this.spaces.get(id)
     if (!space) return
     Object.assign(space, patch)
@@ -297,7 +297,8 @@ export class BrowserModel {
     const space = this.spaces.get(tab.spaceId)
     if (!space) throw new Error(`Unknown space ${tab.spaceId}`)
     if (tab.folderId && this.folders.get(tab.folderId)?.spaceId !== space.id) tab.folderId = null
-    if (isSavedTab(tab)) tab.pinned = false
+    if (tab.folderId) tab.pinned = false
+    if (tab.pinned && !tab.savedUrl) Object.assign(tab, { savedUrl: tab.url, savedTitle: tab.title })
     this.tabs.set(tab.id, tab)
     const slot = this.slotOfTab(tab)
     const list = this.read(slot)
@@ -378,10 +379,13 @@ export class BrowserModel {
     const from = this.spaces.get(tab.spaceId)!
 
     const fromSlot = this.slotOfTab(tab)
-    const saving = !!folder || target.saved === true
+    // Everywhere but today's list is a bookmark: favorites, the saved list, folders.
+    const toSaved = !folder && target.saved === true
+    const toPinned = !folder && !toSaved && target.pinned
+    const saving = !!folder || toSaved || toPinned
     const toSlot: Slot = folder
       ? { folder }
-      : { space: to, key: saving ? 'savedIds' : target.pinned ? 'pinnedTabIds' : 'tabIds' }
+      : { space: to, key: toSaved ? 'savedIds' : toPinned ? 'pinnedTabIds' : 'tabIds' }
     const same = sameSlot(fromSlot, toSlot)
     const before = this.read(fromSlot)
     const fromList = before.filter((t) => t !== id)
@@ -396,7 +400,7 @@ export class BrowserModel {
       this.write(toSlot, toList)
     }
 
-    const patch: Partial<TabData> = { spaceId: to.id, pinned: !saving && target.pinned, folderId: folder?.id ?? null }
+    const patch: Partial<TabData> = { spaceId: to.id, pinned: toPinned, folderId: folder?.id ?? null }
     if (!saving) Object.assign(patch, { savedUrl: '', savedTitle: '' })
     else if (!isSavedTab(tab)) Object.assign(patch, { savedUrl: tab.url, savedTitle: tab.title })
     this.updateTab(id, patch)
@@ -504,7 +508,7 @@ export class BrowserModel {
     if (folder) return { folder }
     const space = this.spaces.get(tab.spaceId)
     if (!space) throw new Error(`Unknown space ${tab.spaceId}`)
-    return { space, key: isSavedTab(tab) ? 'savedIds' : tab.pinned ? 'pinnedTabIds' : 'tabIds' }
+    return { space, key: tab.pinned ? 'pinnedTabIds' : isSavedTab(tab) ? 'savedIds' : 'tabIds' }
   }
 
   private slotOfFolder(folder: FolderData): Slot {

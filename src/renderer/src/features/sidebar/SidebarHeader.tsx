@@ -1,6 +1,7 @@
 import { Icon, type IconName } from '../../components/Icon'
 import { useT } from '../../lib/i18n'
 import { send } from '../../lib/rpc'
+import { titleBar } from '../../lib/title-bar'
 import { selectActiveTab, useBrowser } from '../../stores/browser'
 import { useUi } from '../../stores/ui'
 
@@ -37,7 +38,11 @@ export function SidebarHeader() {
   const tab = useBrowser(selectActiveTab)
   const live = tab?.live ?? false
   return (
-    <div className="drag flex h-[44px] shrink-0 items-center gap-0.5 pr-2" style={{ paddingLeft: fullscreen ? 8 : 78 }}>
+    <div
+      {...titleBar}
+      className="drag flex h-[44px] shrink-0 items-center gap-0.5 pr-2"
+      style={{ paddingLeft: fullscreen ? 8 : 78 }}
+    >
       <IconButton
         icon="sidebar"
         title={t('sidebar.header.toggleSidebar')}

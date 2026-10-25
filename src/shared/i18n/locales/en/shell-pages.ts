@@ -6,11 +6,15 @@ export default {
   'history.today': 'Today',
   'history.yesterday': 'Yesterday',
   'history.empty': 'No history yet',
+  'history.emptyHint': 'Pages you visit will show up here.',
   'history.noMatches': 'No matching history',
+  'history.noMatchesHint': 'Try a shorter word, or part of the address.',
+  'history.clearSearch': 'Clear search',
 
   // Downloads page
   'downloads.clearCompleted': 'Clear completed',
   'downloads.empty': 'No downloads yet',
+  'downloads.emptyHint': 'Files you download will show up here.',
   'downloads.pause': 'Pause',
   'downloads.resume': 'Resume',
   'downloads.showInFinder': 'Show in Finder',
@@ -19,9 +23,13 @@ export default {
   'downloads.status.interrupted': 'Interrupted',
   'downloads.status.paused': 'Paused · {size}',
 
+  // Extensions page (the rest of its strings are in shell-settings)
+  'extensions.page.emptyHint': 'Load an unpacked extension from a folder to get started.',
+
   // Empty space placeholder. {keys} is the ⌘T shortcut.
   'status.empty.title': '{space} has no tabs yet',
   'status.empty.fallbackSpace': 'This space',
+  'status.empty.nothingOpen': 'No tab open',
   'status.empty.newTab': 'Press {keys} to open a new tab',
 
   // Crash page
@@ -41,6 +49,7 @@ export default {
 
   // Network error page. {host} is rendered in bold.
   'status.net.title': 'This site can’t be reached',
+  'status.net.back': 'Go back',
   'status.net.nameNotResolved': '{host}’s server IP address could not be found.',
   'status.net.offline': '{host} can’t be reached: you appear to be offline.',
   'status.net.refused': '{host} refused to connect.',

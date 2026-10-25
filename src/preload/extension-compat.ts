@@ -1,10 +1,22 @@
-// Extension compatibility shims, loaded into every extension context after
-// electron-chrome-extensions' own preload. Electron 44 has two gaps that many
-// real extensions trip over:
+// Extension compatibility shims for every extension context (service workers
+// and chrome-extension:// pages). This file is registered twice, around
+// electron-chrome-extensions' own preload (see compat.ts):
+//
+// Early pass, before the library (which freezes `chrome` when it is done):
+//
+//   chrome.sidePanel does not exist in Electron. Wallets call
+//   `chrome.sidePanel.setPanelBehavior()` at the top of their service
+//   worker, and the TypeError kills the whole worker. We add the API and
+//   forward it to main, which shows the panel in an extension window.
+//
+// Late pass, after the library. Electron 44 has more gaps that many real
+// extensions trip over:
 //
 //   1. chrome.runtime.onInstalled / onStartup never fire.
 //   2. chrome.storage.onChanged never fires inside the background service
 //      worker (it does fire in extension pages).
+//   3. chrome.runtime.getContexts can hit a fatal Chromium assertion.
+//   4. The native `browser` namespace lacks everything the library adds.
 //
 // In service workers we replace those events with emulated ones fed by the
 // main process (onInstalled/onStartup) and by storage writes we observe
@@ -19,6 +31,8 @@ const CHANNEL_EVENT = 'arc-compat:event'
 const CHANNEL_STORAGE = 'arc-compat:storage'
 const CHANNEL_LISTENER = 'arc-compat:listener'
 const CHANNEL_CONTEXTS = 'arc-compat:getContexts'
+const CHANNEL_SIDE_PANEL = 'arc-compat:sidePanel'
+const CHANNEL_SIDE_PANEL_EVENT = 'arc-compat:sidePanelEvent'
 
 type Deliver = (name: string, ...args: unknown[]) => void
 
@@ -26,7 +40,177 @@ const isWorker = process.type === 'service-worker'
 const href = (globalThis as { location?: { href: string } }).location?.href ?? ''
 const isExtensionFrame = !isWorker && href.startsWith('chrome-extension:')
 
-if (isWorker || isExtensionFrame) install()
+// Offscreen documents run without context isolation: the preload shares the
+// page's world, so the "main world" is our own.
+const isolated = process.contextIsolated
+
+if (isWorker || isExtensionFrame) {
+  if (isEarlyPass()) installEarly()
+  else install()
+}
+
+function exposeInMainWorld(key: string, api: unknown): void {
+  if (isolated) contextBridge.exposeInMainWorld(key, api)
+  else (globalThis as Record<string, unknown>)[key] = api
+}
+
+function runInMainWorld<T>(func: () => T): T {
+  return isolated ? (contextBridge.executeInMainWorld({ func }) as T) : func()
+}
+
+/**
+ * True on the first run in this context, while `chrome` is still open. The
+ * mark lives on the main world's global object until the late pass clears it.
+ */
+function isEarlyPass(): boolean {
+  try {
+    return (
+      runInMainWorld(() => {
+        const g = globalThis as unknown as Record<string, unknown> & { chrome?: object }
+        const mark = '__arcCompatEarlyPass'
+        if (g[mark]) {
+          try {
+            delete g[mark]
+          } catch {
+            // ignore
+          }
+          return false
+        }
+        // The library already froze it: run the late pass (no side panel).
+        if (g.chrome && Object.isFrozen(g.chrome)) return false
+        Object.defineProperty(g, mark, { value: true, configurable: true, enumerable: false })
+        return true
+      }) === true
+    )
+  } catch {
+    return false
+  }
+}
+
+/** ipcRenderer.invoke, retried briefly: a worker's very first call can beat main's handler registration. */
+async function invoke(channel: string, ...args: unknown[]): Promise<unknown> {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await ipcRenderer.invoke(channel, ...args)
+    } catch (error) {
+      if (attempt >= 4 || !/No handler registered/i.test(String(error))) throw error
+      await new Promise((r) => setTimeout(r, 50 * 2 ** attempt))
+    }
+  }
+}
+
+function installEarly(): void {
+  let deliver: ((name: string, payload: unknown) => void) | null = null
+  ipcRenderer.on(CHANNEL_SIDE_PANEL_EVENT, (_event, name: string, payload: unknown) => deliver?.(name, payload))
+  const bridge = {
+    call: (method: string, arg: unknown) => invoke(CHANNEL_SIDE_PANEL, method, arg ?? null),
+    subscribe(cb: (name: string, payload: unknown) => void) {
+      deliver = cb
+    }
+  }
+  try {
+    exposeInMainWorld('__arcSidePanel', bridge)
+    runInMainWorld(sidePanelShim)
+  } catch (error) {
+    console.error('[arc] sidePanel shim failed', error)
+  }
+}
+
+/**
+ * chrome.sidePanel, in the extension's own JS world. Must be self-contained.
+ * Like Chrome, it is only there for extensions with the "sidePanel"
+ * permission. Every method takes a callback or returns a promise, and never
+ * throws or rejects: a failure resolves with Chrome's defaults.
+ */
+function sidePanelShim(): void {
+  const g = globalThis as unknown as {
+    chrome?: any
+    __arcSidePanel?: {
+      call(method: string, arg: unknown): Promise<unknown>
+      subscribe(cb: (name: string, payload: unknown) => void): void
+    }
+  }
+  const bridge = g.__arcSidePanel
+  try {
+    delete (g as Record<string, unknown>).__arcSidePanel
+  } catch {
+    // exposed bindings may be non-configurable
+  }
+  const chrome = g.chrome
+  if (!bridge || !chrome?.runtime?.id || Object.isFrozen(chrome)) return
+  if (typeof chrome.sidePanel?.setOptions === 'function') return
+  let manifest: { permissions?: unknown; side_panel?: { default_path?: unknown } } = {}
+  try {
+    manifest = chrome.runtime.getManifest() ?? {}
+  } catch {
+    return
+  }
+  if (!Array.isArray(manifest.permissions) || !manifest.permissions.includes('sidePanel')) return
+  const defaultPath = typeof manifest.side_panel?.default_path === 'string' ? manifest.side_panel.default_path : undefined
+
+  function makeEvent() {
+    const listeners = new Set<(...args: unknown[]) => void>()
+    return {
+      addListener: (fn: (...args: unknown[]) => void) => void listeners.add(fn),
+      removeListener: (fn: (...args: unknown[]) => void) => void listeners.delete(fn),
+      hasListener: (fn: (...args: unknown[]) => void) => listeners.has(fn),
+      hasListeners: () => listeners.size > 0,
+      dispatch(...args: unknown[]) {
+        for (const fn of [...listeners]) {
+          try {
+            fn(...args)
+          } catch (error) {
+            console.error(error)
+          }
+        }
+      }
+    }
+  }
+  const onOpened = makeEvent()
+  const onClosed = makeEvent()
+  bridge.subscribe((name, payload) => {
+    if (name === 'onOpened') onOpened.dispatch(payload)
+    else if (name === 'onClosed') onClosed.dispatch(payload)
+  })
+
+  const call = (method: string, arg: unknown, fallback: unknown, cb?: unknown) => {
+    const p = Promise.resolve()
+      .then(() => bridge.call(method, arg == null || typeof arg !== 'object' ? null : JSON.parse(JSON.stringify(arg))))
+      .then(
+        (result) => result ?? fallback,
+        (error) => {
+          console.warn(`chrome.sidePanel.${method} failed`, error)
+          return fallback
+        }
+      )
+    if (typeof cb === 'function') {
+      p.then((result) => (cb as (r: unknown) => void)(result))
+      return undefined
+    }
+    return p
+  }
+  const optionsFallback = { enabled: true, ...(defaultPath ? { path: defaultPath } : {}) }
+  const api = {
+    setPanelBehavior: (behavior: unknown, cb?: unknown) => call('setPanelBehavior', behavior, undefined, cb),
+    getPanelBehavior: (cb?: unknown) => call('getPanelBehavior', null, { openPanelOnActionClick: false }, cb),
+    setOptions: (options: unknown, cb?: unknown) => call('setOptions', options, undefined, cb),
+    getOptions: (options: unknown, cb?: unknown) =>
+      typeof options === 'function'
+        ? call('getOptions', null, optionsFallback, options)
+        : call('getOptions', options, optionsFallback, cb),
+    open: (options: unknown, cb?: unknown) => call('open', options, undefined, cb),
+    close: (options: unknown, cb?: unknown) => call('close', options, undefined, cb),
+    getLayout: (cb?: unknown) => call('getLayout', null, { side: 'right' }, cb),
+    onOpened,
+    onClosed,
+    Side: { LEFT: 'left', RIGHT: 'right' }
+  }
+  try {
+    Object.defineProperty(chrome, 'sidePanel', { value: api, enumerable: true, configurable: true, writable: true })
+  } catch (error) {
+    console.error('[arc] could not add chrome.sidePanel', error)
+  }
+}
 
 function install(): void {
   let deliver: Deliver | null = null
@@ -59,8 +243,8 @@ function install(): void {
   }
 
   try {
-    contextBridge.exposeInMainWorld('__arcExtensionCompat', bridge)
-    contextBridge.executeInMainWorld({ func: mainWorldShim })
+    exposeInMainWorld('__arcExtensionCompat', bridge)
+    runInMainWorld(mainWorldShim)
   } catch (error) {
     console.error('[arc] extension compat shim failed', error)
   }
@@ -85,7 +269,21 @@ function mainWorldShim(): void {
   } catch {
     // exposed bindings may be non-configurable
   }
-  if (!bridge || !chrome?.runtime?.id || !chrome.storage) return
+  if (!bridge || !chrome?.runtime?.id) return
+
+  // Chromium 152 also exposes the `browser` namespace, but as a separate
+  // native object: none of electron-chrome-extensions' APIs (tabs, windows,
+  // action, …) nor these shims are on it. webextension-polyfill, used by
+  // most wallets, prefers a native `browser`, so those extensions lost
+  // tabs.create, action.onClicked, onInstalled and more, and OKX Wallet's
+  // worker died at the top level. Point `browser` at the full `chrome`.
+  if ('browser' in g && (g as { browser?: unknown }).browser !== chrome) {
+    try {
+      Object.defineProperty(g, 'browser', { value: chrome, writable: true, configurable: true, enumerable: true })
+    } catch {
+      // not configurable: leave the native one
+    }
+  }
 
   function makeEvent() {
     const listeners = new Set<(...args: unknown[]) => void>()
@@ -123,6 +321,8 @@ function mainWorldShim(): void {
       // not writable: keep native
     }
   }
+
+  if (!chrome.storage) return
 
   const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b)
   const clone = <T>(v: T): T => (v === undefined ? v : structuredClone(v))

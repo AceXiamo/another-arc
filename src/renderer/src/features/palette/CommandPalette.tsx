@@ -95,12 +95,12 @@ const COMMANDS: Command[] = [
     run: () => send('extensions.importFromBrowser', 'arc')
   },
   {
-    id: 'import-arc',
-    words: keywords('arcImport.palette.keywords'),
-    title: (t) => t('arcImport.palette.command'),
+    id: 'import-browser',
+    words: keywords('browserImport.palette.keywords'),
+    title: (t) => t('browserImport.palette.command'),
     icon: 'download',
-    // Sidebar and extensions; main confirms first.
-    run: () => send('import.arc')
+    // Bookmarks, extensions and logins; main picks the browser and confirms first.
+    run: () => send('import.best')
   }
 ]
 

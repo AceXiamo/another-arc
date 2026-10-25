@@ -130,7 +130,9 @@ export class DownloadManager {
       receivedBytes: 0,
       totalBytes: item.getTotalBytes(),
       startedAt: Date.now(),
-      endedAt: null
+      endedAt: null,
+      // Picks the icon for names without a known extension (not persisted).
+      mimeType: item.getMimeType() || undefined
     }
     this.states.set(id, state)
     this.shellSync.download(id, state, true)

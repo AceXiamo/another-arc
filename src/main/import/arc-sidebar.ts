@@ -29,12 +29,28 @@ export interface ArcSpace {
   title: string | null
   /** Theme color as #rrggbb, when the space has one. */
   color: string | null
+  /** The space's background ("Edit Theme" in Arc), when it has one. */
+  theme: ArcTheme | null
   /** 'default' or the Chromium profile folder ("Profile 1") the space is tied to. */
   profile: string
   /** Pinned section, in order. */
   pinned: ArcNode[]
   /** Unpinned ("Today") tabs; counted only, never imported. */
   todayCount: number
+}
+
+/**
+ * Arc's window background: `customInfo.windowTheme.background.single._0
+ * .style.color._0`, either `blendedSingleColor._0` ({ color, modifiers }) or
+ * `blendedGradient._0` ({ baseColors, modifiers }).
+ */
+export interface ArcTheme {
+  /** Background colors in order (#rrggbb, 1–3): the first is the primary. */
+  colors: string[]
+  /** `modifiers.intensityFactor`, 0–1. */
+  intensity: number | null
+  /** `modifiers.noiseFactor`, 0–1. */
+  noise: number | null
 }
 
 export interface ArcSidebar {
@@ -58,9 +74,10 @@ export async function readArcSidebar(path: string): Promise<ArcSidebar | null> {
   }
 }
 
-/** Only pages that open here; Arc's own arc:// pages and the like are skipped. */
-const IMPORTABLE_URL = /^(https?|file):/i
-const MAX_DEPTH = 32
+/** Only pages that open here; a browser's own internal pages are skipped. */
+export const IMPORTABLE_URL = /^(https?|file):/i
+/** Guard against a bookmark tree that points at itself. */
+export const MAX_DEPTH = 32
 
 export function parseArcSidebar(json: unknown): ArcSidebar | null {
   const containers = asArray(asObject(asObject(json)?.sidebar)?.containers)
@@ -107,6 +124,7 @@ export function parseArcSidebar(json: unknown): ArcSidebar | null {
       id,
       title: typeof space.title === 'string' && space.title.trim() ? space.title.trim() : null,
       color: spaceColor(space),
+      theme: spaceTheme(space),
       profile: profileKey(space.profile),
       pinned: pinned ? nodes(pinned.childrenIds, 0) : [],
       todayCount: asArray(unpinned?.childrenIds)?.length ?? 0
@@ -125,7 +143,7 @@ export function parseArcSidebar(json: unknown): ArcSidebar | null {
 }
 
 /** Counts for the confirmation dialog. */
-export function summarizeArcSidebar(sidebar: ArcSidebar): { spaces: number; folders: number; tabs: number; favorites: number } {
+export function summarizeSidebar(sidebar: ArcSidebar): { spaces: number; folders: number; tabs: number; favorites: number } {
   let folders = 0
   let tabs = 0
   const walk = (list: ArcNode[]) => {
@@ -170,14 +188,37 @@ function profileKey(spec: unknown): string {
 function spaceColor(space: Record<string, unknown>): string | null {
   const palette = asObject(asObject(asObject(space.customInfo)?.windowTheme)?.primaryColorPalette)
   const tone = asObject(palette?.midTone)
-  if (!tone) return null
+  return tone ? arcColor(tone) : null
+}
+
+/** { red, green, blue } in extended sRGB (may leave 0–1) → #rrggbb. */
+function arcColor(c: Record<string, unknown>): string {
   const channel = (v: unknown) => {
     const n = typeof v === 'number' && Number.isFinite(v) ? v : 0
     return Math.round(Math.max(0, Math.min(1, n)) * 255)
       .toString(16)
       .padStart(2, '0')
   }
-  return `#${channel(tone.red)}${channel(tone.green)}${channel(tone.blue)}`
+  return `#${channel(c.red)}${channel(c.green)}${channel(c.blue)}`
+}
+
+function spaceTheme(space: Record<string, unknown>): ArcTheme | null {
+  const background = asObject(asObject(asObject(space.customInfo)?.windowTheme)?.background)
+  const style = asObject(asObject(asObject(asObject(asObject(background?.single)?._0)?.style)?.color)?._0)
+  const single = asObject(asObject(style?.blendedSingleColor)?._0)
+  const gradient = asObject(asObject(style?.blendedGradient)?._0)
+  const source = single ?? gradient
+  if (!source) return null
+  const raw = single ? [single.color] : (asArray(gradient?.baseColors) ?? [])
+  const colors = raw
+    .map(asObject)
+    .filter((c): c is Record<string, unknown> => c !== undefined && c.alpha !== 0)
+    .slice(0, 3)
+    .map(arcColor)
+  if (colors.length === 0) return null
+  const modifiers = asObject(source.modifiers)
+  const factor = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? Math.max(0, Math.min(1, v)) : null)
+  return { colors, intensity: factor(modifiers?.intensityFactor), noise: factor(modifiers?.noiseFactor) }
 }
 
 function asObject(value: unknown): Record<string, unknown> | undefined {

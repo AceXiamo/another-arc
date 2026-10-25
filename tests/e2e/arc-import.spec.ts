@@ -66,7 +66,7 @@ test('imports the Arc sidebar into spaces, folders and favorites, and is safe to
   }
 })
 
-test('offers "Import from Arc" once on a fresh profile', async () => {
+test('offers the import once on a fresh profile', async () => {
   const arc = tempDir('arc-offer-')
   const root = join(arc, 'User Data')
   mkdirSync(root, { recursive: true })
@@ -91,7 +91,7 @@ test('offers "Import from Arc" once on a fresh profile', async () => {
     let run = await launch(userData, { ARC_IMPORT_ROOT: root })
     await stubDialogs(run.app, 1)
     await inMain(run.app, (b) => b.offerArcImport())
-    expect(await shown(run.app)).toEqual([t('arcImport.all.message')])
+    expect(await shown(run.app)).toEqual([t('browserImport.all.message', { browser: 'Arc' })])
     expect((await state(run.app)).spaces[0]!.savedIds).toEqual([])
     await inMain(run.app, (b) => b.offerArcImport())
     expect(await shown(run.app)).toHaveLength(1)
@@ -102,9 +102,12 @@ test('offers "Import from Arc" once on a fresh profile', async () => {
     await stubDialogs(run.app, 0)
     await inMain(run.app, (b) => b.offerArcImport())
     expect(await shown(run.app)).toEqual([])
-    // …but File → Import from Arc still works, sidebar and all.
-    await rpc(run.shell, 'import.arc')
-    expect(await shown(run.app)).toEqual([t('arcImport.all.message'), t('arcImport.result.message')])
+    // …but File → Import from Browser still works, sidebar and all.
+    await rpc(run.shell, 'import.run', 'arc')
+    expect(await shown(run.app)).toEqual([
+      t('browserImport.all.message', { browser: 'Arc' }),
+      t('browserImport.result.message', { browser: 'Arc' })
+    ])
     const s = await state(run.app)
     expect(s.spaces.map((x) => x.name)).toContain('Work')
     expect(Object.keys(s.folders)).toHaveLength(2)
@@ -129,6 +132,33 @@ test('the offer imports everything when accepted on a fresh profile', async () =
     const s = await state(app)
     expect(s.spaces[0]!.savedIds.length).toBe(4)
     expect(s.spaces[0]!.pinnedTabIds.length).toBe(1)
+  } finally {
+    await quit(app)
+    removeDir(userData)
+    removeDir(arc)
+  }
+})
+
+test('Settings lists each browser with what it would bring over, and imports it', async () => {
+  const arc = tempDir('arc-settings-')
+  const root = join(arc, 'User Data')
+  mkdirSync(root, { recursive: true })
+  writeFileSync(join(arc, 'StorableSidebar.json'), JSON.stringify(fixture()))
+  const { app, shell, userData } = await launch(undefined, { ARC_IMPORT_ROOT: root })
+  try {
+    await rpc(shell, 'tabs.openInternal', 'settings')
+    await expect(shell.getByRole('heading', { name: t('browserImport.settings.section') })).toBeVisible()
+    // One row per installed browser; ARC_IMPORT_ROOT leaves only Arc.
+    await expect(shell.getByText('Arc', { exact: true })).toBeVisible()
+    await expect(shell.getByText(t('browserImport.settings.bookmarks', { tabs: 6, folders: 2 }))).toBeVisible()
+
+    await inMain(app, (_b, _a, electron) => {
+      electron.dialog.showMessageBox = (async () => ({ response: 0, checkboxChecked: false })) as never
+    })
+    await shell.getByRole('button', { name: t('browserImport.settings.import') }).click()
+    await expect
+      .poll(async () => (await state(app)).spaces[0]!.savedIds.length, { timeout: 5000 })
+      .toBe(4)
   } finally {
     await quit(app)
     removeDir(userData)

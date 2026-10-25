@@ -3,7 +3,7 @@ import { DEFAULT_SETTINGS, DEFAULT_WINDOW_STATE } from '@shared/defaults'
 import { applyPatch, type ShellState } from '@shared/patch'
 import { isSavedTab } from '@shared/tabs'
 import type { MoveFolderOptions, MoveTabOptions } from '@shared/ipc'
-import type { FolderId, FolderState, SpaceState, StatePatch, TabId, TabState } from '@shared/types'
+import type { FolderId, FolderState, SpaceId, SpaceState, StatePatch, TabId, TabState } from '@shared/types'
 
 /** Mirror of main-process state. Mutated only by patches (and optimistic moves). */
 export const useBrowser = create<ShellState>()(() => ({
@@ -76,7 +76,9 @@ export function optimisticMove(tabId: TabId, target: MoveTabOptions): void {
     }
 
     const folderId = intoFolder ? intoFolder.id : null
-    const savedNow = folderId !== null || target.saved === true
+    // As in main: favorites, the saved list and folders are bookmarks; today's list is not.
+    const pinned = !intoFolder && !target.saved && target.pinned
+    const savedNow = folderId !== null || target.saved === true || pinned
     const wasSaved = isSavedTab(tab)
     const saved =
       savedNow && !wasSaved
@@ -89,7 +91,7 @@ export function optimisticMove(tabId: TabId, target: MoveTabOptions): void {
       folders: oldFolder || intoFolder ? folders : s.folders,
       tabs: {
         ...s.tabs,
-        [tabId]: { ...tab, ...saved, spaceId: to.id, pinned: savedNow ? false : target.pinned, folderId }
+        [tabId]: { ...tab, ...saved, spaceId: to.id, pinned, folderId }
       }
     }
   })
@@ -127,6 +129,14 @@ export function optimisticFolder(folderId: FolderId, patch: Partial<Pick<FolderS
   useBrowser.setState((s) => {
     const folder = s.folders[folderId]
     return folder ? { folders: { ...s.folders, [folderId]: { ...folder, ...patch } } } : {}
+  })
+}
+
+/** Space edits land locally first, so closing the editor never flashes the old theme. */
+export function optimisticSpace(spaceId: SpaceId, patch: Partial<Pick<SpaceState, 'name' | 'icon' | 'color' | 'theme'>>): void {
+  useBrowser.setState((s) => {
+    const space = s.spaces[spaceId]
+    return space ? { spaces: { ...s.spaces, [spaceId]: { ...space, ...patch } } } : {}
   })
 }
 

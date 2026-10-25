@@ -8,6 +8,8 @@ const PROBE = join(ROOT, 'tests/fixtures/extensions/api-probe')
 /** APIs a typical extension cannot live without; these must pass. */
 const REQUIRED = [
   'runtime:getManifest',
+  'runtime:browser namespace is chrome',
+  'runtime:worker user agent',
   'runtime:onInstalled',
   'runtime:content→sw sendMessage',
   'tabs:sw→content sendMessage',
@@ -31,7 +33,12 @@ const REQUIRED = [
   'webNavigation:onCompleted',
   'contextMenus:create',
   'cookies:set/get',
-  'fetch:cross-origin from SW (host permission)'
+  'fetch:cross-origin from SW (host permission)',
+  // Emulated by the compat layer (Electron has no side panel).
+  'sidePanel:available',
+  'sidePanel:top-level setPanelBehavior',
+  'sidePanel:setPanelBehavior/getPanelBehavior',
+  'sidePanel:setOptions/getOptions'
 ]
 
 test('API probe: service worker, content script, popup, options and lifecycle', async () => {
@@ -75,6 +82,23 @@ test('API probe: service worker, content script, popup, options and lifecycle', 
     })
     expect(popupBounds?.width).toBeGreaterThan(200)
     expect(popupBounds?.height).toBeGreaterThan(40)
+    // …in a movable window with a titlebar, a child of the browser window
+    // (not the library's frameless, anchored popup), titled after the extension.
+    const popupWindow = await inMain(run.app, (b, _a, electron) => {
+      const win = electron.BrowserWindow.getAllWindows().find((w) => w.webContents.getURL().endsWith('/popup.html'))!
+      const before = win.getBounds()
+      win.setPosition(before.x + 30, before.y + 20)
+      const after = win.getBounds()
+      return {
+        movable: win.isMovable(),
+        childOfBrowser: win.getParentWindow()?.id === b.window.win.id,
+        titlebar: before.height - win.getContentBounds().height,
+        title: win.getTitle(),
+        moved: { dx: after.x - before.x, dy: after.y - before.y }
+      }
+    })
+    expect(popupWindow).toMatchObject({ movable: true, childOfBrowser: true, title: 'API Probe', moved: { dx: 30, dy: 20 } })
+    expect(popupWindow.titlebar).toBeGreaterThan(0)
 
     // Options page opens as a tab and can read extension storage.
     await rpc(run.shell, 'extensions.openOptions', ext.id)

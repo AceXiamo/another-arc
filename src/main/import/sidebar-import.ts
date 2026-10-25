@@ -3,13 +3,23 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { dialog, type BaseWindow } from 'electron'
-import { SPACE_COLORS } from '@shared/defaults'
+import { DEFAULT_SPACE, SPACE_COLORS } from '@shared/defaults'
 import type { Translate } from '@shared/i18n'
-import type { FolderId, SpaceId, TabId } from '@shared/types'
-import { importRoots } from '../extensions/browser-import'
+import { isDefaultTheme, THEME_LIMITS } from '@shared/theme'
+import type { FolderId, SpaceId, SpaceTheme, TabId } from '@shared/types'
+import { bookmarkSource, browserRoot, resolveRoot } from './browsers'
+import type { ImportBrowser } from '@shared/ext-import'
+import { chromiumBookmarksPath, readChromiumBookmarks } from './chromium-bookmarks'
 import type { FaviconCache, Icon } from '../history/favicon-cache'
 import type { TabManager } from '../tabs/tab-manager'
-import { arcSidebarPath, readArcSidebar, summarizeArcSidebar, type ArcNode, type ArcSidebar } from './arc-sidebar'
+import {
+  arcSidebarPath,
+  readArcSidebar,
+  summarizeSidebar,
+  type ArcNode,
+  type ArcSidebar,
+  type ArcTheme
+} from './arc-sidebar'
 
 // Puts Arc's sidebar into this browser's model:
 // - each Arc space with pinned items maps to the space with the same name here
@@ -33,18 +43,24 @@ export interface ArcImportResult {
   tabIds: TabId[]
 }
 
-export function applyArcSidebar(tabs: TabManager, sidebar: ArcSidebar): ArcImportResult {
+export function applySidebar(tabs: TabManager, sidebar: ArcSidebar): ArcImportResult {
   const { model } = tabs
   const result: ArcImportResult = { spacesCreated: 0, folders: 0, tabs: 0, favorites: 0, duplicates: 0, tabIds: [] }
   const targetByProfile = new Map<string, SpaceId>()
 
-  const resolveSpace = (title: string | null, color: string | null): SpaceId => {
-    if (title === null) return model.spaceOrder[0]!
-    const key = title.toLowerCase()
-    const match = model.spaceOrder.find((id) => model.getSpace(id)?.name.trim().toLowerCase() === key)
-    if (match) return match
+  const resolveSpace = (title: string | null, color: string | null, theme: ArcTheme | null): SpaceId => {
+    const look = theme ? arcSpaceLook(theme) : null
+    const key = title?.toLowerCase()
+    const match =
+      title === null ? model.spaceOrder[0]! : model.spaceOrder.find((id) => model.getSpace(id)?.name.trim().toLowerCase() === key)
+    if (match) {
+      // Arc's look only replaces a look nobody chose: the default color and theme.
+      const space = model.getSpace(match)
+      if (look && space && space.color === DEFAULT_SPACE.color && isDefaultTheme(space.theme)) tabs.updateSpace(match, look)
+      return match
+    }
     result.spacesCreated += 1
-    return tabs.createSpace({ name: title, icon: 'star', color: nearestSpaceColor(color) })
+    return tabs.createSpace({ name: title!, icon: 'star', color: nearestSpaceColor(color), ...look })
   }
 
   const childIds = (spaceId: SpaceId, parentId: FolderId | null): readonly string[] =>
@@ -77,7 +93,7 @@ export function applyArcSidebar(tabs: TabManager, sidebar: ArcSidebar): ArcImpor
 
   for (const space of sidebar.spaces) {
     if (space.pinned.length === 0) continue
-    const spaceId = resolveSpace(space.title, space.color)
+    const spaceId = resolveSpace(space.title, space.color, space.theme)
     if (!targetByProfile.has(space.profile)) targetByProfile.set(space.profile, spaceId)
     importNodes(space.pinned, spaceId, null)
   }
@@ -98,6 +114,23 @@ export function applyArcSidebar(tabs: TabManager, sidebar: ArcSidebar): ArcImpor
   return result
 }
 
+/**
+ * Arc's background → this space's color and theme. Arc's factors are 0–1 on
+ * the same scale as ours (0–100): intensity is how much of the color shows,
+ * noise the grain. Arc stores no gradient angle, so the default stays.
+ */
+export function arcSpaceLook(theme: ArcTheme): { color: string; theme: Partial<SpaceTheme> } {
+  const [color, ...gradient] = theme.colors
+  return {
+    color: color ?? DEFAULT_SPACE.color,
+    theme: {
+      gradient: gradient.slice(0, THEME_LIMITS.gradientStops),
+      ...(theme.intensity !== null ? { intensity: theme.intensity * 100 } : {}),
+      ...(theme.noise !== null ? { noise: theme.noise * 100 } : {})
+    }
+  }
+}
+
 /** Arc's theme color, snapped to the closest color the space editor offers. */
 export function nearestSpaceColor(hex: string | null): string {
   const rgb = (h: string) => [1, 3, 5].map((i) => Number.parseInt(h.slice(i, i + 2), 16))
@@ -116,19 +149,33 @@ export function nearestSpaceColor(hex: string | null): string {
   return best
 }
 
-/** Arc's "User Data" folder (respects ARC_IMPORT_ROOT; none under ARC_TEST without it). */
-function arcRoot(): string | null {
-  return importRoots().find((r) => r.browser === 'arc')?.root ?? null
+/** Arc's profile folder (respects ARC_IMPORT_ROOT; none under ARC_TEST without it). */
+export async function arcRoot(): Promise<string | null> {
+  const base = browserRoot('arc')
+  if (!base) return null
+  // The sidebar file sits next to the profile folder, so it is readable even
+  // when the profile tree is not.
+  return (await resolveRoot(base)) ?? base
 }
 
 export async function loadArcSidebar(): Promise<ArcSidebar | null> {
-  const root = arcRoot()
+  const root = await arcRoot()
   return root ? readArcSidebar(arcSidebarPath(root)) : null
 }
 
 /**
- * Icons Arc already has for these pages, from its Chromium "Favicons"
- * database, keyed by page URL. The database is copied first: Arc may hold
+ * The bookmarks of one profile, in the shape `applySidebar` places: Arc's
+ * own sidebar file, or Chromium's `Bookmarks` for every other browser.
+ */
+export async function loadBookmarks(browser: ImportBrowser, root: string, profileDir: string): Promise<ArcSidebar | null> {
+  return bookmarkSource(browser) === 'arc-sidebar'
+    ? readArcSidebar(arcSidebarPath(root))
+    : readChromiumBookmarks(chromiumBookmarksPath(join(root, profileDir)))
+}
+
+/**
+ * Icons the other browser already has for these pages, from its Chromium
+ * "Favicons" database, keyed by page URL. The database is copied first: Arc may hold
  * it locked while running, and nothing under Arc's folder is ever opened for
  * writing. Missing or unreadable database = empty map.
  */
@@ -172,14 +219,19 @@ export async function readArcFavicons(
 }
 
 /**
- * Give imported tabs an icon: Arc's own first (instant, offline), then
- * `<origin>/favicon.ico` from the network for the rest, in the background.
+ * Give imported tabs an icon: the other browser's own first (instant,
+ * offline), then `<origin>/favicon.ico` from the network for the rest, in
+ * the background. `profileDir` is the folder its Favicons database is in.
  */
-export async function importArcFavicons(tabs: TabManager, favicons: FaviconCache, tabIds: readonly TabId[]): Promise<void> {
-  const root = arcRoot()
+export async function importFavicons(
+  tabs: TabManager,
+  favicons: FaviconCache,
+  tabIds: readonly TabId[],
+  profileDir: string | null
+): Promise<void> {
   const imported = tabIds.map((id) => tabs.model.getTab(id)).filter((t) => t !== undefined)
   const pageOf = (t: { savedUrl: string; url: string }) => t.savedUrl || t.url
-  const icons = root ? await readArcFavicons(join(root, 'Default'), imported.map(pageOf)) : new Map()
+  const icons = profileDir ? await readArcFavicons(profileDir, imported.map(pageOf)) : new Map()
   for (const tab of imported) {
     const hit = icons.get(pageOf(tab))
     if (!hit || tab.favicon) continue
@@ -208,7 +260,7 @@ export async function importArcSidebarWithDialogs(
       await show({ type: 'info', message: t('arcImport.notFound'), buttons: [t('common.close')] })
       return
     }
-    const summary = summarizeArcSidebar(sidebar)
+    const summary = summarizeSidebar(sidebar)
     if (summary.tabs + summary.favorites === 0) {
       await show({ type: 'info', message: t('arcImport.nothing'), buttons: [t('common.close')] })
       return
@@ -222,8 +274,9 @@ export async function importArcSidebarWithDialogs(
       cancelId: 1
     })
     if (response !== 0) return
-    const result = applyArcSidebar(tabs, sidebar)
-    void importArcFavicons(tabs, favicons, result.tabIds)
+    const result = applySidebar(tabs, sidebar)
+    const root = await arcRoot()
+    void importFavicons(tabs, favicons, result.tabIds, root ? join(root, 'Default') : null)
     await show({
       type: 'info',
       message: t('arcImport.result.message'),

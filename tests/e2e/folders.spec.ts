@@ -114,3 +114,33 @@ test('folders, nesting, collapse state and folder tabs survive a restart', async
     removeDir(userData)
   }
 })
+
+test('closing a favorite tile unloads it and keeps it (⌘W included)', async () => {
+  const { url, server } = await startServer()
+  const { app, shell, userData } = await launch()
+  try {
+    const spaceId = (await state(app)).activeSpaceId
+    const other = await rpc<string>(shell, 'tabs.create', { url: `${url}/page/other` })
+    await waitForShown(app, '/page/other')
+    const fav = await rpc<string>(shell, 'tabs.create', { url: `${url}/page/fav`, pinned: true })
+    await waitForShown(app, '/page/fav')
+    expect((await state(app)).tabs[fav]).toMatchObject({ pinned: true, savedUrl: `${url}/page/fav` })
+
+    await rpc(shell, 'tabs.navigate', fav, `${url}/page/fav-elsewhere`)
+    await waitForShown(app, '/page/fav-elsewhere')
+    // ⌘W through the same command path as the keyboard shortcut.
+    await inMain(app, (b) => b.runCommand('tab.close'))
+    await waitForShown(app, '/page/other')
+    const s = await state(app)
+    expect(s.spaces[0]!.pinnedTabIds).toEqual([fav])
+    expect(s.tabs[fav]).toMatchObject({ live: false, url: `${url}/page/fav` })
+    expect(s.spaces[0]!.activeTabId).toBe(other)
+    // ⌘D leaves a favorite alone.
+    await inMain(app, (b, id: string) => b.tabs.toggleSaved(id), fav)
+    expect((await state(app)).spaces.find((x) => x.id === spaceId)!.pinnedTabIds).toEqual([fav])
+  } finally {
+    await quit(app)
+    server.close()
+    removeDir(userData)
+  }
+})

@@ -32,6 +32,9 @@ safe(() =>
   })
 )
 safe(() => chrome.storage.onChanged.addListener((changes) => events.storage.push(Object.keys(changes))))
+// Wallets call this at the top of their worker; it must not throw. (The probe
+// keeps its popup: the panel stays off for action clicks.)
+const sidePanelTopLevel = safe(() => chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: false }))
 
 const surfaces = {}
 let origin = null
@@ -80,6 +83,10 @@ async function runChecks(tabId) {
     return bg.length >= 1 && all.length >= bg.length ? true : `all=${all.length} bg=${bg.length}`
   })
   await check('runtime', 'getPlatformInfo', async () => (await chrome.runtime.getPlatformInfo()).os)
+  // Chromium's own `browser` object lacks the library's APIs; webextension-polyfill would pick it.
+  await check('runtime', 'browser namespace is chrome', () => typeof browser === 'undefined' || browser === chrome)
+  // Some extensions (OKX Wallet) refuse to trust their pages when the worker's UA says Electron.
+  await check('runtime', 'worker user agent', () => (/Electron/.test(navigator.userAgent) ? navigator.userAgent : true))
 
   // -- tabs ----------------------------------------------------------------------
   await check('tabs', 'sw→content sendMessage', async () => {
@@ -234,6 +241,19 @@ async function runChecks(tabId) {
     return true
   })
   await check('sidePanel', 'available', () => typeof chrome.sidePanel?.setOptions === 'function')
+  await check('sidePanel', 'top-level setPanelBehavior', () => sidePanelTopLevel)
+  await check('sidePanel', 'setPanelBehavior/getPanelBehavior', async () => {
+    await chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: false })
+    const b = await chrome.sidePanel.getPanelBehavior()
+    return b?.openPanelOnActionClick === false ? true : JSON.stringify(b)
+  })
+  await check('sidePanel', 'setOptions/getOptions', async () => {
+    await chrome.sidePanel.setOptions({ path: 'options.html', enabled: true })
+    const o = await new Promise((resolve) => chrome.sidePanel.getOptions({}, resolve))
+    // Back off, so the action keeps opening the popup.
+    await chrome.sidePanel.setOptions({ enabled: false })
+    return o?.path === 'options.html' && o?.enabled === true ? true : JSON.stringify(o)
+  })
   await check('userScripts', 'available', () => typeof chrome.userScripts?.register === 'function')
 
   return results

@@ -104,13 +104,19 @@ The sidebar follows Arc: **favorites** (the icon tiles), then each space's **pin
 
 **Import from Arc** (offered once when a fresh profile starts; also File → Import from Arc…, Settings, or ⌘T): one confirmation brings over the sidebar and the extensions. Arc's spaces, pinned tabs, nested folders and favorites are read from `~/Library/Application Support/Arc/StorableSidebar.json`. They go into the space with the same name (created if missing; Arc's unnamed space maps to your first space). Folders and URLs that are already there are merged, so importing again is safe. Icons come from Arc's own favicon database, then from the network. Arc's folder is only read, never written.
 
+## Space themes
+
+Right-click a space → **Edit Theme…** (or the last swatch in the space editor) to give each space its own look, as in Arc: up to three gradient colors with an angle, how strongly they tint the sidebar, film grain, and a Light / Dark override of the chrome (pages keep following Settings). Changes preview live; Cancel restores the saved look. **Import from Arc** carries Arc's colors, intensity and grain into the spaces it creates, and into spaces whose look was never changed.
+
 ## Extensions
 
 Open the Extensions page (app menu → Extensions…, or type “extensions” in the ⌘T palette) and click **Load unpacked extension** to pick a folder containing `manifest.json`. The browser copies it into the profile, so you can later re-import it from the same folder with **Update from source**.
 
 **Import from Arc** (shown when Arc or Chrome is installed; also in the ⌘T palette) copies the extensions turned on in the last-used profile, after a confirmation that lists what is skipped and why. Extension ids stay the same, and **Update from source** picks up the browser’s newer version. Only the files are copied: extension data (wallets, settings, logins) is not, so wallets must be restored again.
 
-Most MV3 APIs work, including `declarativeNetRequest` and `offscreen`. Not supported: `webRequest` events, `userScripts`, `sidePanel`, `identity`, `tabCapture` / `desktopCapture`, and `tabs.captureVisibleTab`. For ad blocking, use **uBlock Origin Lite** rather than uBlock Origin. The per-extension compatibility table is in the Phase 0 report.
+Clicking an extension's toolbar button opens its popup or side panel in a small window of its own, titled with the extension's name. Drag it anywhere: it stays above the browser window (not above other apps), remembers where you left it, and stays open when you click elsewhere, so a wallet can sit next to a dApp. Close it with its close button, ⌘W, or another click on the toolbar button. Popups size themselves to their content; side panels open at 380×640 and can be resized.
+
+Most MV3 APIs work, including `declarativeNetRequest`, `offscreen` and `sidePanel` (emulated: the panel opens in the extension's window). Not supported: `webRequest` events, `userScripts`, `identity`, `tabCapture` / `desktopCapture`, and `tabs.captureVisibleTab`. For ad blocking, use **uBlock Origin Lite** rather than uBlock Origin. The per-extension compatibility table is in the Phase 0 report.
 
 ## Languages
 

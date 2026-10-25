@@ -50,3 +50,24 @@ UI 打磨（配色 token、半透明图标、各页面与弹层细节）由一�
 - **从 Arc 导入书签**（同日追加）：读取 Arc 的 `StorableSidebar.json`，把空间、置顶标签、嵌套文件夹和收藏导进来。你的数据：1 个空间、30 个文件夹、274 个书签、4 个收藏。导入只用了 15ms；图标 241/275 从 Arc 的 `Favicons` 库即时取到，剩下的走网络。为此书签区顶层也可以直接放书签（对应 Arc 的置顶标签），图块改叫"收藏"，⌘D 改成 Arc 的置顶语义。入口：设置页"从 Arc 导入"、⌘T 命令。
 - **"从 Arc 导入"一次全导**（同日追加）：用户把打包产物放进 /Applications 后没找到导入入口（原来藏在设置页底部，且侧边栏和扩展是分开的两个按钮）。现在一个确认框同时导入侧边栏和扩展；新配置首次启动时主动询问一次（选择会持久化，不会重复问）；入口加到菜单栏"文件 → 从 Arc 导入…"、设置页和 ⌘T。用真实 Arc 数据在临时配置里完整跑过：7.7 秒，16/16 个扩展、271 个书签、30 个文件夹、4 个收藏。
 
+## 2026-10-25 · 扩展窗口与 sidePanel
+
+- **问题**：OKX Wallet 点按钮没反应；扩展的 Popup 不能移动。
+- **扩展窗口**：Popup 和侧边面板改为在独立的小窗口里打开（标准标题栏显示扩展名，可拖动；浏览器窗口的子窗口；失焦不关闭；⌘W、关闭按钮、`window.close()` 或再点一次按钮关闭；每个扩展一个窗口，记住位置）。Popup 继续按内容定尺寸，侧边面板默认 380×640、可调大小。实现方式是运行时替换扩展库的 `activateClick`，在它创建 PopupView 之前接管点击；没有 Popup 也没有面板的扩展仍收到 `action.onClicked`，没运行过的 SW 会先被唤醒。
+- **`chrome.sidePanel`**：兼容层在 SW 和扩展页面里提供完整的常用子集，经 IPC 交给 main。扩展库会冻结 `chrome`，所以兼容层 preload 注册两次，第一遍在库之前加 `chrome.sidePanel`。
+- **OKX 真正的病因有三个**，排查时逐个确认：
+  1. Chromium 152 暴露了一个原生 `browser` 对象，上面没有扩展库补的 API。webextension-polyfill 优先用它，于是 OKX 的 `browser.tabs.onUpdated` 在 SW 顶层抛错，`action.onClicked` 也注册到了永远不会触发的原生事件上。兼容层把 `browser` 指向完整的 `chrome`。这一条影响所有用 polyfill 的钱包。
+  2. 扩展 SW 的 `navigator.userAgent` 不受 session UA 影响，仍带 `Electron/44`。OKX 看到 "electron" 就把自己的页面当成不可信来源，界面永远停在 Loading。加载扩展时设置 `app.userAgentFallback`。
+  3. 缺 `chrome.sidePanel`。
+  修完后 OKX 的引导页（标签页）和侧边面板（扩展窗口）都能正常显示 Create/Import wallet，等级从 C 升到 B。
+- **顺带修复**：`chrome.windows.create` 的相对 URL 没有解析（钱包授权弹窗会是空白窗口）；`focused: false` 的窗口之前根本不显示；离屏文档没有 context isolation，兼容层之前在里面直接报错。
+- **测试**：新增 `extension-windows.spec.ts`（移动、记住位置、切换、⌘W、`window.close()`、侧边面板 API、`windows.create`、重启后面板行为仍在）和 `side-panel` 测试扩展；API 探针增加 sidePanel、`browser` 命名空间和 SW UA 检查，46/48 通过；新增 `side-panel.test.ts` 单元测试。真实扩展调查脚本现在也会记录点按钮后打开的是窗口还是标签页。
+
+## 2026-10-25 · 标题栏拖动
+
+- 现象：窗口顶部拖不动。外壳是 BaseWindow 里的 WebContentsView，`app-region: drag` 在这里不可靠。
+- 做法：标题栏区域（侧栏顶部、内容区上方的间隙、底部空间栏、收起侧栏后的整条顶部间隙）在按下时通知 main，main 以约 120Hz 读取光标位置并按"起始位置 + 光标位移"移动窗口，松开时停止。位置是绝对计算的，所以原生拖动若也生效，两者落点一致。窗口跟着光标走时页面收不到 pointermove，所以由 main 轮询光标而不是靠页面事件。
+- 双击按系统设置"双击窗口标题栏时"（缩放 / 最小化 / 不执行）。
+- 开启 `acceptFirstMouse`（同 Chrome）：后台窗口第一次点击就能拖动、点到侧栏。
+- 测试：`title-bar.spec.ts` 用伪造的光标位置驱动 main，覆盖拖动、按钮不触发拖动、收起侧栏、双击三种系统设置。
+

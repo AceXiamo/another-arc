@@ -1,3 +1,5 @@
+import { DEFAULT_SPACE } from '@shared/defaults'
+import { isHexColor, parseStoredTheme } from '@shared/theme'
 import type { Database } from './database'
 import type { ExtensionRecord, FolderRecord, NavState, ProfileRecord, SpaceRecord, TabRecord } from './records'
 
@@ -34,6 +36,8 @@ interface SpaceRow {
   name: string
   icon: string
   color: string
+  /** JSON (SpaceTheme); NULL before v3. */
+  theme: string | null
   sort_order: number
   profile_id: string
   active_tab_id: string | null
@@ -83,7 +87,8 @@ export class SessionStore {
       id: r.id,
       name: r.name,
       icon: r.icon,
-      color: r.color,
+      color: isHexColor(r.color) ? r.color : DEFAULT_SPACE.color,
+      theme: parseStoredTheme(r.theme),
       sortOrder: r.sort_order,
       profileId: r.profile_id,
       activeTabId: r.active_tab_id,
@@ -93,16 +98,17 @@ export class SessionStore {
 
   saveSpace(s: SpaceRecord): void {
     this.db.run(
-      `INSERT INTO spaces (id, name, icon, color, sort_order, profile_id, active_tab_id, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `INSERT INTO spaces (id, name, icon, color, theme, sort_order, profile_id, active_tab_id, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(id) DO UPDATE SET
-         name = excluded.name, icon = excluded.icon, color = excluded.color,
+         name = excluded.name, icon = excluded.icon, color = excluded.color, theme = excluded.theme,
          sort_order = excluded.sort_order, profile_id = excluded.profile_id,
          active_tab_id = excluded.active_tab_id`,
       s.id,
       s.name,
       s.icon,
       s.color,
+      JSON.stringify(s.theme),
       s.sortOrder,
       s.profileId,
       s.activeTabId,

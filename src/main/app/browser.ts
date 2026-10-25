@@ -1,7 +1,9 @@
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { app, dialog, Menu, nativeTheme, session, WebContentsView, type BrowserWindow, type IpcMainInvokeEvent, type WebContents } from 'electron'
-import { DEFAULT_WINDOW_STATE } from '@shared/defaults'
+import { DEFAULT_PROFILE_ID, DEFAULT_SPACE, DEFAULT_WINDOW_STATE } from '@shared/defaults'
+import type { ImportableBrowser, ImportBrowser } from '@shared/ext-import'
+import { chromeColor } from '@shared/theme'
 import { clampSidebarWidth, SURFACE_FRAME_PREFIX, surfaceBounds, SURFACES, type SurfaceId } from '@shared/layout'
 import type { ShellSnapshot, WindowState } from '@shared/types'
 import { translator, type Translate } from '@shared/i18n'
@@ -22,7 +24,13 @@ import { SettingsService } from '../settings/settings-service'
 import type { CommandId } from '../shortcuts/commands'
 import { isReservedKeyUp, reservedCommandFor } from '../shortcuts/keymap'
 import { buildAppMenu } from '../shortcuts/menu'
-import { importFromArc, isFreshProfile, type ArcImportHost } from '../import/arc-import'
+import {
+  bestImportCandidate,
+  importFromBrowser,
+  isFreshProfile,
+  scanImportable,
+  type ImportHost
+} from '../import/import-flow'
 import { TabDiscarder } from '../tabs/discarder'
 import { TabManager } from '../tabs/tab-manager'
 import { ZOOM_SETTINGS_KEY, ZoomStore } from '../tabs/zoom'
@@ -73,6 +81,8 @@ export class Browser {
   private readonly pendingSurfaces = new Map<SurfaceId, boolean>()
   /** The one-time "Import from Arc?" offer was already shown on this profile. */
   private arcImportOffered = false
+  /** Last native window background set (see syncWindowBackground). */
+  private windowColor = ''
 
   constructor() {
     this.db = new Database(userDataPath('browser.db'))
@@ -158,6 +168,7 @@ export class Browser {
     })
     // Pages follow the browser theme through prefers-color-scheme.
     nativeTheme.themeSource = this.settings.get().theme
+    nativeTheme.on('updated', () => this.syncWindowBackground())
 
     this.wireDelegates()
     this.router = new RpcRouter((event) => this.isTrustedSender(event))
@@ -215,7 +226,7 @@ export class Browser {
         htmlFullscreen: false
       },
       preload: outPath('preload', 'shell.cjs'),
-      backgroundColor: nativeTheme.shouldUseDarkColors ? '#19191d' : '#ebebf0',
+      backgroundColor: (this.windowColor = this.windowBackground()),
       devTools: true
     })
     this.window = window
@@ -323,7 +334,7 @@ export class Browser {
     window.focusPage()
   }
 
-  private get arcImportHost(): ArcImportHost {
+  private get importHost(): ImportHost {
     const browser = this
     return {
       tabs: this.tabs,
@@ -333,21 +344,48 @@ export class Browser {
         return browser.t
       },
       parent: () => this.window?.win ?? null,
-      toast: (message) => this.shell.command({ type: 'toast', message })
+      toast: (message: string) => this.shell.command({ type: 'toast', message }),
+      profileSession: () => this.profiles.defaultSession(),
+      profilePartition: () => this.profiles.get(DEFAULT_PROFILE_ID).partition,
+      userData: () => app.getPath('userData'),
+      relaunch: () => {
+        app.relaunch()
+        app.quit()
+      }
     }
   }
 
-  /** File menu / Settings / ⌘T: import the sidebar and extensions from Arc. */
-  importFromArc(): Promise<void> {
-    return importFromArc(this.arcImportHost).catch((error) => console.error('[arc-import]', error))
+  /** Every installed browser and what its chosen profile would bring over. */
+  importableBrowsers(chosen?: Record<string, string>): Promise<ImportableBrowser[]> {
+    return scanImportable(this.importHost, chosen).catch((error: unknown) => {
+      console.error('[import]', error)
+      return []
+    })
   }
 
-  /** Once per profile, while it is still empty: offer to bring everything over from Arc. */
+  /** Settings / File menu: import bookmarks, extensions and logins from one browser. */
+  importFrom(browser: ImportBrowser, profileDir?: string): Promise<void> {
+    return importFromBrowser(this.importHost, browser, profileDir === undefined ? {} : { profileDir }).catch(
+      (error: unknown) => console.error('[import]', error)
+    )
+  }
+
+  /** ⌘T / palette: import from whichever browser has the most to bring over. */
+  async importFromBestBrowser(): Promise<void> {
+    const browser = await bestImportCandidate(this.importHost).catch(() => null)
+    if (browser) await this.importFrom(browser)
+  }
+
+  /** Once per profile, while it is still empty: offer to bring everything over. */
   async offerArcImport(): Promise<void> {
-    if (this.arcImportOffered || this.quitting || !isFreshProfile(this.arcImportHost)) return
+    if (this.arcImportOffered || this.quitting || !isFreshProfile(this.importHost)) return
+    const browser = await bestImportCandidate(this.importHost).catch(() => null)
+    if (!browser) return
     this.arcImportOffered = true
     this.persister.setSetting(ARC_IMPORT_OFFERED_KEY, true)
-    await importFromArc(this.arcImportHost, { firstRun: true }).catch((error) => console.error('[arc-import]', error))
+    await importFromBrowser(this.importHost, browser, { firstRun: true }).catch((error: unknown) =>
+      console.error('[import]', error)
+    )
   }
 
   /** Integration tests (ARC_TEST) show the window without stealing focus. */
@@ -477,8 +515,8 @@ export class Browser {
         return this.openInternal('extensions')
       case 'open.settings':
         return this.openInternal('settings')
-      case 'import.arc':
-        return void this.importFromArc()
+      case 'import.browser':
+        return void this.importFromBestBrowser()
       case 'window.close':
         return window?.win.close()
       default: {
@@ -554,8 +592,30 @@ export class Browser {
         this.extensions.tabSelected(wc)
         if (this.window?.getSurface('find')?.visible) this.shell.command({ type: 'find.close' })
       },
-      htmlFullscreen: (on) => this.setHtmlFullscreen(on)
+      htmlFullscreen: (on) => this.setHtmlFullscreen(on),
+      activeThemeChanged: () => this.syncWindowBackground()
     })
+  }
+
+  /**
+   * The native window background shows wherever the shell has not painted
+   * yet (live resize, first frame); keep it on the active space's chrome color.
+   */
+  private windowBackground(): string {
+    const space = this.tabs.model.activeSpace()
+    const appearance = space?.theme.appearance ?? 'system'
+    const dark = appearance === 'system' ? nativeTheme.shouldUseDarkColors : appearance === 'dark'
+    return chromeColor(space?.color ?? DEFAULT_SPACE.color, space?.theme.intensity ?? 50, dark)
+  }
+
+  private syncWindowBackground(): void {
+    const win = this.window?.win
+    if (!win || win.isDestroyed()) return
+    const color = this.windowBackground()
+    if (color !== this.windowColor) {
+      this.windowColor = color
+      win.setBackgroundColor(color)
+    }
   }
 
   private setHtmlFullscreen(on: boolean): void {

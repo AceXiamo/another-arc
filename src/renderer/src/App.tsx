@@ -6,8 +6,12 @@ import { CommandPalette } from './features/palette/CommandPalette'
 import { DragGhost } from './features/sidebar/DragGhost'
 import { PeekEdge } from './features/sidebar/PeekEdge'
 import { Sidebar } from './features/sidebar/Sidebar'
+import { ChromeBackdrop } from './features/theme/ChromeBackdrop'
+import { titleBar } from './lib/title-bar'
 import { useBrowser } from './stores/browser'
 import { useUi } from './stores/ui'
+
+const CARD_CHROME_OFF = { '--chrome': 'transparent' } as React.CSSProperties
 
 export function App() {
   const collapsed = useBrowser((s) => s.window.sidebarCollapsed)
@@ -20,8 +24,24 @@ export function App() {
   const cardLeft = collapsed ? `${LAYOUT.gutter}px` : 'var(--sidebar-width)'
   return (
     <div className="relative h-full w-full">
-      <ContentArea left={cardLeft} />
-      {collapsed ? <PeekEdge /> : <Sidebar />}
+      <ChromeBackdrop left={cardLeft} />
+      {/* The backdrop paints the chrome (gradient, grain), so the card's own
+          chrome-colored box-shadow is turned off here. */}
+      <div className="contents" style={CARD_CHROME_OFF}>
+        <ContentArea left={cardLeft} />
+      </div>
+      {collapsed ? (
+        <PeekEdge />
+      ) : (
+        // The gap above the page acts as the title bar too (the sidebar header covers the left).
+        <div
+          {...titleBar}
+          data-title-bar
+          className="drag absolute right-0 top-0 z-10"
+          style={{ left: cardLeft, height: LAYOUT.gutter }}
+        />
+      )}
+      {!collapsed && <Sidebar />}
       {collapsed && peek && <Sidebar floating />}
       {palette && <CommandPalette key={palette} mode={palette} cardLeft={cardLeft} />}
       <FindSurface />

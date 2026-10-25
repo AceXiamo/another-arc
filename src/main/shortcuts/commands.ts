@@ -40,7 +40,7 @@ export type CommandId =
   | 'open.downloads'
   | 'open.extensions'
   | 'open.settings'
-  | 'import.arc'
+  | 'import.browser'
   | 'window.close'
   | 'shell.devtools'
 

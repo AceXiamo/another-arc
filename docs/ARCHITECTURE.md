@@ -48,7 +48,14 @@ BaseWindow (hiddenInset 标题栏，红绿灯在侧边栏左上)
 - 书签关闭后，激活权交给最近使用的活跃标签，而不是相邻的书签，避免意外唤醒一个书签。普通标签仍然按相邻规则选下一个；关掉最后一个普通标签时也不会唤醒书签。
 - 标签循环（⌃Tab）和 ⌘1–9 按屏幕上看到的顺序：图块 → 展开的文件夹里的书签 → 标签列表。
 - 存储：`folders` 表（`parent_id`、`sort_order`、`collapsed`），`tabs` 增加 `folder_id`、`saved_url`、`saved_title`（迁移 v2）。混排列表里的 `sort_order` 就是在父级列表里的位置；加载时检查悬空引用（文件夹丢失的书签留在顶层）和父子环。
-- 从 Arc 导入（`src/main/import/`）：解析 `StorableSidebar.json`（扁平的 `[id, 对象, …]` 列表，`childrenIds` 组成树），按空间名合并、同层同名文件夹合并、同位置同网址去重，所以重复导入是安全的。书签以未加载状态加入，不会被自动选中。图标先从 Arc 的 Chromium `Favicons` 库（复制到临时目录后只读打开）按页面网址取，剩下的在后台抓 `<origin>/favicon.ico`。
+- Arc 的侧边栏格式（`arc-sidebar.ts`）：`StorableSidebar.json` 把集合存成扁平的 `[id, 对象, …]` 列表，`childrenIds` 组成树。书签以未加载状态加入，不会被自动选中。图标先从那个浏览器的 Chromium `Favicons` 库（复制到临时目录后只读打开）按页面网址取，剩下的在后台抓 `<origin>/favicon.ico`。
+- 从其他浏览器导入（`src/main/import/`）：`browsers.ts` 是唯一的浏览器目录表（产品名、配置目录、钥匙串条目名、书签放在哪），加一个 Chromium 系浏览器就是加一行。现在覆盖 Arc、Dia、Chrome（含 Beta/Canary）、Edge、Brave、Vivaldi、Opera、Chromium、Comet。macOS 上 Chromium 系把配置直接放在 Application Support 下，Browser Company 的两个放在 `User Data` 里，`resolveRoot` 两个都试，所以表里猜错也还能找到。配置列表优先读 `Local State` 的 `info_cache`，读不到就扫像配置的目录（Opera 这类）。
+- 书签：Arc 读它自己的 `StorableSidebar.json`，其余读 Chromium 的 `Bookmarks`（书签栏放顶层，"其他书签" 和 "移动书签" 非空时各成一个文件夹，名字用文件里那份，已经是那个浏览器创建时的语言）。两边都产出同一个结构，由 `applySidebar` 落地，所以同名空间合并、同层同名文件夹合并、同位置同网址去重这些规则对两边都生效，重复导入是安全的。
+- 登录态 cookie（`chromium-cookies.ts`）：`Cookies` 库复制到临时目录后只读打开，值用该浏览器的钥匙串条目解密（`chromium-crypt.ts`：PBKDF2-HMAC-SHA1(1003 轮, "saltysalt") 出 16 字节密钥，AES-128-CBC，IV 是 16 个空格；Chromium 130 起明文前 32 字节是 `SHA-256(host_key)`，核对一致才剥掉，顺带验证密钥没错）。再逐条 `session.cookies.set()`，由 Chromium 用我们自己的密钥重新加密入库——跨浏览器复制 cookie 文件是不可能的，密钥不同。`host_key` 带前导点才传 `domain`，否则 host-only cookie 会被放宽到子域。CHIPS 分区 cookie（没有对应 API）、会话 cookie 和过期的跳过并计数。
+- 登录态的网站存储（`chromium-storage.ts`）：localStorage 和 IndexedDB 都是 Chromium 开着就一直持有的 LevelDB，没有 API 能写，所以导入时复制到 `<分区>/import-staged/` 并记下 `import-pending.json`，下次启动在 `startBrowser` 里、任何 session 创建之前移入（唯一没被锁住的时刻），完事清掉暂存目录和标记。两者的合并方式不同：
+  - localStorage 是整个分区一个库，没有合并两个库的办法，所以是替换，原库改名 `leveldb.before-import` 留作备份。这一步会替换掉本地已有的网站数据，确认框里说明了。
+  - IndexedDB 是一个网站一个目录，所以是真合并：本地没有这个网站的就移进来，已经有的一律不动（移入前再查一次，暂存之后到重启之间这个网站可能刚存了东西）。一个网站的 `.indexeddb.leveldb` 和 `.indexeddb.blob` 一起走。`chrome-extension_…` 跳过——确认框里说了扩展数据不复制，悄悄搬钱包 vault 是另一回事。存储键被顶层站点分区的那些在 `WebStorage/<bucket id>/` 下、还要配额库里的一行，和 CHIPS cookie 一样带不过来。
+- 只读一个配置：浏览器每个配置一套 cookie，合在一起同一个站点会互相覆盖。设置页按浏览器列出可导入的内容，配置多于一个时给个下拉选；默认是该浏览器最近使用的那个。
 - 右键菜单（侧边栏空白处、文件夹、标签）都是 main 里的原生菜单；新建文件夹后 main 发 `folder.rename` 命令，外壳显示内联重命名框。
 
 ## 标签生命周期与内存
@@ -94,8 +101,13 @@ BaseWindow (hiddenInset 标题栏，红绿灯在侧边栏左上)
 - **兼容层**（`src/preload/extension-compat.ts` + `src/main/extensions/compat.ts`）：在扩展的 SW 和页面里替换几个 Electron 有缺陷的 API。
   - `runtime.onInstalled` / `onStartup`：Electron 不触发。改由 main 在安装或更新后唤醒 SW 并派发；onStartup 只唤醒注册过监听的扩展，延迟 3 秒。
   - `storage.onChanged`：Service Worker 里收不到。SW 自己的写入在本地派发；扩展页面的写入经 main 转发给 SW。
-  - `runtime.getContexts`：原生实现会撞上 Chromium 断言。改为 main 根据自己跟踪的标签、Popup、SW、离屏文档构造结果。
-- **Popup 尺寸**（`src/main/extensions/popup-fit.ts`）：Electron 44 不触发 `preferred-size-changed`，扩展库因此永远不显示 Popup。改为按 Chrome 的规则自行测量：内容最小不溢出宽度，以及该宽度下的高度。
+  - `runtime.getContexts`：原生实现会撞上 Chromium 断言。改为 main 根据自己跟踪的标签、扩展窗口（POPUP / SIDE_PANEL）、SW、离屏文档构造结果。
+  - `chrome.sidePanel`：Electron 没有。扩展库的 preload 最后会冻结 `chrome`，所以兼容层 preload 注册两次：库之前那一遍只加 `chrome.sidePanel`，库之后那一遍做其余垫片（同一个文件，用主 world 上的标记区分）。状态在 main（`side-panel.ts`），行为和全局选项会持久化。
+  - `browser`：Chromium 152 的原生 `browser` 对象上没有扩展库补的 API；webextension-polyfill 会优先用它。兼容层把它指向完整的 `chrome`。
+  - 离屏文档没有 context isolation，兼容层在这种情况下直接在同一个 world 里安装。
+  - 扩展 SW 不用 session 的 UA；加载扩展时把 `app.userAgentFallback` 设为同一个 Chrome UA。
+- **扩展窗口**（`src/main/extensions/extension-window.ts`）：在扩展库创建 PopupView 之前接管工具栏点击（运行时替换 `BrowserActionAPI.activateClick`），Popup 和侧边面板都在一个带标准标题栏的子窗口里打开：可拖动、失焦不关闭、每个扩展一个、记住位置。再点一次按钮关闭。没有 Popup 也没有面板时仍派发 `action.onClicked`（必要时先唤醒 SW）。
+- **Popup 尺寸**（`src/main/extensions/popup-fit.ts`）：Electron 44 不触发 `preferred-size-changed`。改为按 Chrome 的规则自行测量：内容最小不溢出宽度，以及该宽度下的高度；窗口在测量完之后才显示，之后只增大不缩小，用户手动调整过就不再跟随。
 - 详细的兼容性数据见 `docs/PHASE0-REPORT.md`。
 
 ## 启动路径
@@ -113,6 +125,13 @@ shell 首次渲染用 `flushSync` 同步提交，提交后立即通知 main 显�
 1. `before-quit`：停止休眠器 → 结束扩展 SW 的保活任务并卸载扩展（否则 Chromium 关闭阶段会多等 2–15 秒）→ 快照所有标签的导航历史 → 冻结 TabManager（之后 WebContents 的销毁事件不再改动模型）→ 写盘 → 关闭所有页面（不等 beforeunload）。
 2. `will-quit`：再写一次盘，然后关闭 SQLite（WAL checkpoint）。
 3. main 进程装有全局 `uncaughtException` / `unhandledRejection` 处理器，异常只写入 `<userData>/logs/main.log`，绝不弹出 Electron 的异常对话框。
+
+## 空间主题
+
+- 数据：`SpaceState.color` 仍是主色（也是强调色），`SpaceState.theme` 存其余部分：`gradient`（主色之后 0–2 个渐变色）、`angle`、`intensity`（0–100，50 即原来的 17% / 15% 着色）、`noise`（颗粒，0 为关）、`appearance`（`system` / `light` / `dark`，只改外壳的明暗，网页仍跟随设置）。`spaces.theme` 列存 JSON（迁移 v3，NULL 即默认值）；读取、IPC 合并时都经 `sanitizeSpaceTheme` 夹紧数值、只收 `#rrggbb`。
+- 渲染全靠 `<html>` 上的 CSS 变量（`lib/theme.ts`，不经 React）：切换 Space 只改几个变量。每个主题色按 `--tint` 混入底色，再把亮度夹在 ≥0.76（浅色）/ ≤0.36（深色），任何强度下正文对比度都 ≥6.5:1；着色超过默认值时侧边栏的次要文字（`.chrome-ink`）随之加深。`src/shared/theme.ts` 用同一套公式算出原生窗口背景色，单元测试校验两者一致及对比度。
+- 窗口底色由 `ChromeBackdrop` 画：全窗口一个元素，用 `clip-path: shape(evenodd …)` 在页面卡片处挖出与 `ContentArea` 完全相同的圆角洞，所以外壳浮到页面上方时页面仍可见。路径裁剪直接画进外壳的根图层，没有额外的合成层或 render surface（实测图层数与改动前相同）。`ContentArea` 自己的大 box-shadow 在 `App` 里被设为透明。
+- 颗粒是一张静态贴图：首次需要时在空闲回调里用 canvas 画一次（128 CSS px，按设备像素比，约 5 ms、150 KB 的 data URL），以样式规则注入，透明度由 `--grain-opacity` 控制，`noise = 0` 时 `display: none`。没有逐帧滤镜或动画：滚动标签列表不重绘它（合成滚动），拖动侧边栏宽度时它与原来的 box-shadow 一样随根图层重绘（实测每帧绘制加光栅化多约 0.1 ms，样式计算因变量增多多约 0.3 ms；120 Hz 下没有掉帧）。
 
 ## 多语言
 

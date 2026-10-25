@@ -1,4 +1,5 @@
 import { LAYOUT } from '@shared/layout'
+import { titleBar } from '../../lib/title-bar'
 import { useUi } from '../../stores/ui'
 
 /**
@@ -9,7 +10,7 @@ import { useUi } from '../../stores/ui'
 export function PeekEdge() {
   return (
     <>
-      <div className="drag absolute left-0 right-0 top-0" style={{ height: LAYOUT.gutter }} />
+      <div {...titleBar} data-title-bar className="drag absolute left-0 right-0 top-0" style={{ height: LAYOUT.gutter }} />
       <div
         className="absolute bottom-0 left-0 top-0 z-20"
         style={{ width: LAYOUT.gutter }}

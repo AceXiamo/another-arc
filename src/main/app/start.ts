@@ -1,10 +1,14 @@
 import { app } from 'electron'
+import { applyPendingStorage } from '../import/chromium-storage'
 import { Browser } from './browser'
 
 const OPENABLE = /^(https?|file):/i
 
 /** Boot the browser; returns a function that opens externally supplied URLs. */
 export async function startBrowser(queuedUrls: string[]): Promise<(url: string) => void> {
+  // Before the first session exists: finish an import that staged site
+  // storage, which can only be moved in while it is unlocked.
+  applyPendingStorage(app.getPath('userData'))
   const browser = new Browser()
 
   app.on('web-contents-created', (_event, wc) => {

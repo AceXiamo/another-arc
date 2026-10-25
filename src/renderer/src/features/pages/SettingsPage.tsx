@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import type { ImportSourceSummary } from '@shared/ext-import'
+import type { ImportableBrowser } from '@shared/ext-import'
 import { LOCALES, type MessageKey } from '@shared/i18n'
 import type { SearchEngineId, Settings, SitePermission } from '@shared/types'
 import { isValidSearchTemplate, SEARCH_ENGINES } from '@shared/url'
@@ -38,15 +38,20 @@ export default function SettingsPage() {
   const loadPermissions = () => void rpc('permissions.list').then(setPermissions)
   useEffect(loadPermissions, [])
 
-  // What Arc has to offer; both scans are read-only and cheap.
-  type SidebarSummary = { spaces: number; folders: number; tabs: number; favorites: number }
-  const [arcSidebar, setArcSidebar] = useState<SidebarSummary | null>(null)
-  const [arcExtensions, setArcExtensions] = useState<ImportSourceSummary | null>(null)
+  // Every installed browser and what it would bring over. The scan is
+  // read-only; picking another profile re-runs it for that browser.
+  const [browsers, setBrowsers] = useState<ImportableBrowser[]>([])
+  const [profiles, setProfiles] = useState<Record<string, string>>({})
   useEffect(() => {
-    void rpc('import.arcSidebarSummary').then(setArcSidebar)
-    void rpc('extensions.importSources').then((list) => setArcExtensions(list.find((s) => s.id === 'arc') ?? null))
-  }, [])
-  const hasArcSidebar = arcSidebar !== null && arcSidebar.tabs + arcSidebar.favorites > 0
+    void rpc('import.browsers', profiles).then(setBrowsers)
+  }, [profiles])
+
+  const offers = (b: ImportableBrowser) =>
+    [
+      ...(b.bookmarks ? [t('browserImport.settings.bookmarks', b.bookmarks)] : []),
+      ...(b.extensions > 0 ? [t('browserImport.settings.extensions', { count: b.extensions })] : []),
+      ...(b.logins ? [t('browserImport.settings.logins', { hosts: b.logins.hosts })] : [])
+    ].join(' · ')
 
   const engines: Array<{ value: SearchEngineId; label: string }> = [
     ...(Object.entries(SEARCH_ENGINES) as Array<[SearchEngineId, { name: string }]>).map(([value, e]) => ({
@@ -138,17 +143,22 @@ export default function SettingsPage() {
         </Row>
       </Section>
 
-      {(hasArcSidebar || arcExtensions) && (
-        <Section title={t('arcImport.settings.section')}>
-          <Row
-            label={t('arcImport.settings.everything')}
-            hint={[
-              ...(hasArcSidebar ? [t('arcImport.settings.sidebarHint', arcSidebar)] : []),
-              ...(arcExtensions ? [t('arcImport.settings.extensionsHint', { count: arcExtensions.importable })] : [])
-            ].join(' · ')}
-          >
-            <SmallButton onClick={() => send('import.arc')}>{t('arcImport.settings.import')}</SmallButton>
-          </Row>
+      {browsers.length > 0 && (
+        <Section title={t('browserImport.settings.section')}>
+          {browsers.map((b) => (
+            <Row key={b.id} label={b.name} hint={offers(b)}>
+              {b.profiles.length > 1 && (
+                <Select
+                  value={b.profileDir}
+                  options={b.profiles.map((p) => ({ value: p.dir, label: p.name }))}
+                  onChange={(dir) => setProfiles((chosen) => ({ ...chosen, [b.id]: dir }))}
+                />
+              )}
+              <SmallButton onClick={() => send('import.run', b.id, b.profileDir)}>
+                {t('browserImport.settings.import')}
+              </SmallButton>
+            </Row>
+          ))}
         </Section>
       )}
 

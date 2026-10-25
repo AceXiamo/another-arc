@@ -3,6 +3,7 @@ import { Icon } from '../../components/Icon'
 import { SpaceIcon } from '../../components/SpaceIcon'
 import { useT } from '../../lib/i18n'
 import { send } from '../../lib/rpc'
+import { titleBar } from '../../lib/title-bar'
 import { useBrowser } from '../../stores/browser'
 import { useUi } from '../../stores/ui'
 import { IconButton } from './SidebarHeader'
@@ -65,7 +66,7 @@ export function SpaceBar() {
   const t = useT()
   const order = useBrowser((s) => s.spaceOrder)
   return (
-    <div className="drag flex h-11 shrink-0 items-center gap-0.5 px-2">
+    <div {...titleBar} className="drag flex h-11 shrink-0 items-center gap-0.5 px-2">
       <IconButton icon="settings" title={t('sidebar.spaceBar.settings')} onClick={() => send('tabs.openInternal', 'settings')} />
       <DownloadsButton />
       <div className="no-drag flex min-w-0 flex-1 items-center justify-center gap-0.5 overflow-x-auto">

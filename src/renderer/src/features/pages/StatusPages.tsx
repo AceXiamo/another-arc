@@ -2,10 +2,11 @@ import { Fragment, useState } from 'react'
 import type { MessageKey } from '@shared/i18n'
 import type { TabState } from '@shared/types'
 import { displayHost } from '@shared/url'
-import { Icon, type IconName } from '../../components/Icon'
+import { Illustration } from '../../components/Illustration'
 import { SpaceIcon } from '../../components/SpaceIcon'
 import { useLocale, useT } from '../../lib/i18n'
 import { send } from '../../lib/rpc'
+import { useBrowser } from '../../stores/browser'
 import { useUi } from '../../stores/ui'
 
 /**
@@ -18,50 +19,50 @@ function fill(text: string, slots: Record<string, React.ReactNode>): React.React
   )
 }
 
-function Shell({ children }: { children: React.ReactNode }) {
+/**
+ * Centered column: art, then heading, text and actions. It is anchored from
+ * the top (about where centered content would start) rather than centered,
+ * so revealing "Advanced" grows downward instead of moving the buttons.
+ */
+function Shell({ art, children }: { art: React.ReactNode; children: React.ReactNode }) {
   return (
-    <div className="scroll-y flex h-full p-8">
-      <div className="m-auto flex w-full max-w-[440px] flex-col items-start gap-3 pb-[6vh]">{children}</div>
+    <div className="scroll-y h-full px-8 pb-10 pt-[max(2rem,calc(46vh-160px))]">
+      <div className="anim-fade mx-auto flex w-full max-w-[420px] flex-col items-center text-center">
+        {art}
+        {children}
+      </div>
     </div>
   )
 }
 
-function Badge({ icon, danger }: { icon: IconName; danger?: boolean }) {
-  return (
-    <span
-      className={`mb-1 grid h-12 w-12 place-items-center rounded-[14px] ${
-        danger ? 'bg-[var(--danger-soft)] text-[var(--danger)]' : 'bg-[var(--surface-2)] text-[var(--ink)] shadow-[var(--card-shadow)]'
-      }`}
-    >
-      <Icon name={icon} size={24} strokeWidth={1.5} />
-    </span>
-  )
-}
-
 function Title({ children }: { children: React.ReactNode }) {
-  return <h1 className="text-[19px] font-semibold leading-tight tracking-[-0.01em]">{children}</h1>
+  return <h1 className="mt-6 text-balance text-[19px] font-semibold leading-tight tracking-[-0.01em]">{children}</h1>
 }
 
 function Body({ children }: { children: React.ReactNode }) {
-  return <p className="leading-relaxed text-[var(--text-2)]">{children}</p>
+  return <p className="mt-2 text-balance leading-relaxed text-[var(--text-2)]">{children}</p>
 }
 
 function Detail({ children }: { children: React.ReactNode }) {
   return (
-    <code className="max-w-full break-all rounded-[6px] bg-[var(--surface-2)] px-2 py-1 font-mono text-[11px] text-[var(--text-3)]">
+    <code className="mt-3 max-w-full break-all rounded-[6px] bg-[var(--surface-2)] px-2 py-1 font-mono text-[11px] text-[var(--text-3)] shadow-[var(--card-shadow)]">
       {children}
     </code>
   )
+}
+
+function Actions({ children }: { children: React.ReactNode }) {
+  return <div className="mt-6 flex flex-wrap justify-center gap-2">{children}</div>
 }
 
 function Button({ children, onClick, primary }: { children: React.ReactNode; onClick: () => void; primary?: boolean }) {
   return (
     <button
       onClick={onClick}
-      className={`h-[30px] rounded-[8px] px-3.5 font-medium ${
+      className={`h-8 rounded-[9px] px-4 font-medium transition-[scale,filter,background-color] duration-150 ease-out active:scale-[0.96] ${
         primary
           ? 'bg-[var(--accent-fill)] text-white hover:brightness-110 active:brightness-95'
-          : 'text-[var(--text-2)] hover:bg-[var(--hover)] hover:text-[var(--text)] active:bg-[var(--press)]'
+          : 'bg-[var(--surface-2)] text-[var(--text-1)] shadow-[var(--card-shadow)] hover:bg-[var(--surface-3)] active:bg-[var(--press)]'
       }`}
     >
       {children}
@@ -71,15 +72,31 @@ function Button({ children, onClick, primary }: { children: React.ReactNode; onC
 
 export function EmptyState({ spaceName, spaceIcon }: { spaceName: string; spaceIcon?: string }) {
   const t = useT()
+  // A space full of favorites and pinned tabs is not empty; it just has nothing open.
+  const hasBookmarks = useBrowser((s) => {
+    const space = s.spaces[s.window.activeSpaceId]
+    return !!space && space.pinnedTabIds.length + space.savedIds.length > 0
+  })
   return (
-    <div className="flex h-full flex-col items-center justify-center gap-3 pb-[6vh] text-[var(--text-3)]">
-      {spaceIcon && <SpaceIcon icon={spaceIcon} size={34} className="mb-1 text-[var(--ink-faint)]" />}
-      <div className="text-[15px] font-medium text-[var(--text-2)]">
-        {t('status.empty.title', { space: spaceName || t('status.empty.fallbackSpace') })}
+    <div className="flex h-full flex-col items-center justify-center pb-[6vh] text-center">
+      <Illustration name="no-tabs" className="anim-fade">
+        {/* The space's own glyph sits in the empty window (body center: 64, 59.5). */}
+        {spaceIcon && (
+          <SpaceIcon
+            icon={spaceIcon}
+            size={26}
+            className="absolute left-[64px] top-[59.5px] -translate-x-1/2 -translate-y-1/2 text-[color-mix(in_oklab,var(--art-line)_70%,transparent)]"
+          />
+        )}
+      </Illustration>
+      <div className="mt-6 text-balance text-[15px] font-medium text-[var(--text-1)]">
+        {hasBookmarks
+          ? t('status.empty.nothingOpen')
+          : t('status.empty.title', { space: spaceName || t('status.empty.fallbackSpace') })}
       </div>
       <button
         onClick={() => useUi.setState({ palette: 'new-tab' })}
-        className="flex h-8 items-center gap-1.5 rounded-[8px] px-2.5 hover:bg-[var(--hover)] hover:text-[var(--text-2)]"
+        className="mt-2 flex h-8 items-center gap-1.5 rounded-[8px] px-2.5 text-[var(--text-3)] transition-[scale,background-color] duration-150 ease-out hover:bg-[var(--hover)] hover:text-[var(--text-2)] active:scale-[0.96] active:bg-[var(--press)]"
       >
         {fill(t('status.empty.newTab'), {
           keys: (
@@ -98,15 +115,14 @@ export function CrashPage({ tab }: { tab: TabState }) {
   const t = useT()
   const locale = useLocale()
   return (
-    <Shell>
-      <Badge icon="crash" />
+    <Shell art={<Illustration name="crash" />}>
       <Title>{t('status.crash.title')}</Title>
       <Body>{t('status.crash.body', { host: displayHost(tab.url, locale) })}</Body>
-      <div className="mt-2">
+      <Actions>
         <Button primary onClick={() => send('tabs.reload', tab.id, false)}>
           {t('common.reload')}
         </Button>
-      </div>
+      </Actions>
     </Shell>
   )
 }
@@ -120,26 +136,25 @@ export function ErrorPage({ tab }: { tab: TabState }) {
   const bold = <b className="font-semibold text-[var(--text)]">{host}</b>
   if (error.kind === 'certificate') {
     return (
-      <Shell>
-        <Badge icon="warning" danger />
+      <Shell art={<Illustration name="certificate" tone="danger" />}>
         <Title>{t('status.cert.title')}</Title>
         <Body>{fill(t('status.cert.body'), { host: bold })}</Body>
         <Detail>
           {error.description} ({error.code})
         </Detail>
-        <div className="mt-2 flex gap-1.5">
+        <Actions>
           <Button primary onClick={() => (tab.canGoBack ? send('tabs.goBack', tab.id) : send('tabs.close', tab.id))}>
             {t('status.cert.back')}
           </Button>
           <Button onClick={() => setAdvanced((v) => !v)}>
             {advanced ? t('status.cert.hideAdvanced') : t('status.cert.advanced')}
           </Button>
-        </div>
+        </Actions>
         {advanced && (
-          <div className="anim-fade mt-1 rounded-[10px] bg-[var(--surface-2)] p-3.5 text-[12px] leading-relaxed text-[var(--text-2)] shadow-[var(--card-shadow)]">
-            {t('status.cert.advancedBody', { host })}
+          <div className="anim-fade mt-4 w-full rounded-[12px] bg-[var(--surface-2)] p-4 text-left text-[12px] leading-relaxed text-[var(--text-2)] shadow-[var(--card-shadow)]">
+            <p className="text-pretty">{t('status.cert.advancedBody', { host })}</p>
             <button
-              className="mt-2 block font-medium text-[var(--danger)] underline underline-offset-2"
+              className="-mx-1 mt-2 rounded-[6px] px-1 py-0.5 text-left font-medium text-[var(--danger)] underline decoration-[color-mix(in_oklab,var(--danger)_40%,transparent)] underline-offset-2 hover:bg-[var(--danger-soft)] hover:decoration-current"
               onClick={() => send('tabs.allowCertificate', tab.id)}
             >
               {t('status.cert.proceed', { host })}
@@ -150,16 +165,16 @@ export function ErrorPage({ tab }: { tab: TabState }) {
     )
   }
   return (
-    <Shell>
-      <Badge icon="offline" />
+    <Shell art={<Illustration name="offline" className="my-[28px]" />}>
       <Title>{t('status.net.title')}</Title>
       <Body>{fill(t(netErrorKey(error.code)), { host: bold })}</Body>
       <Detail>{error.description}</Detail>
-      <div className="mt-2">
+      <Actions>
         <Button primary onClick={() => send('tabs.reload', tab.id, false)}>
           {t('common.reload')}
         </Button>
-      </div>
+        {tab.canGoBack && <Button onClick={() => send('tabs.goBack', tab.id)}>{t('status.net.back')}</Button>}
+      </Actions>
     </Shell>
   )
 }

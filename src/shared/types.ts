@@ -45,13 +45,34 @@ export interface TabState {
   lastActiveAt: number
 }
 
+/** Light/dark mode of the chrome while a space is active; 'system' follows Settings. */
+export type SpaceAppearance = 'system' | 'light' | 'dark'
+
+/**
+ * How a space paints the sidebar and window chrome (Arc's "Edit Theme").
+ * `SpaceState.color` stays the primary color and the accent; this holds the
+ * rest. Always sanitized in main (see `sanitizeSpaceTheme`).
+ */
+export interface SpaceTheme {
+  /** Extra gradient colors after `color`, as `#rrggbb` (0–2). */
+  gradient: string[]
+  /** Gradient direction in degrees, CSS convention (0 = to top, 90 = to right). 0–359. */
+  angle: number
+  /** 0–100: how strongly the colors tint the chrome. 50 is the classic tint. */
+  intensity: number
+  /** 0–100: film-grain overlay; 0 = off. */
+  noise: number
+  appearance: SpaceAppearance
+}
+
 export interface SpaceState {
   id: SpaceId
   name: string
   /** Emoji or short glyph. */
   icon: string
-  /** Theme color as `#rrggbb`. */
+  /** Theme color as `#rrggbb`: the first gradient color and the accent. */
   color: string
+  theme: SpaceTheme
   profileId: ProfileId
   pinnedTabIds: TabId[]
   /**
@@ -126,6 +147,8 @@ export interface ExtensionInfo {
   icon: string | null
   /** chrome-extension:// URL of the options page, if any. */
   optionsUrl: string | null
+  /** Its popup or side panel window is open. */
+  windowOpen?: boolean
 }
 
 export type DownloadStatus = 'progressing' | 'completed' | 'cancelled' | 'interrupted'
@@ -141,6 +164,8 @@ export interface DownloadState {
   totalBytes: number
   startedAt: number
   endedAt: number | null
+  /** MIME type reported by the server; only known for downloads made this run. */
+  mimeType?: string
 }
 
 export type PermissionKind =
@@ -241,6 +266,7 @@ export type ShellCommand =
   | { type: 'palette.close' }
   | { type: 'find.open' }
   | { type: 'find.close' }
-  | { type: 'space.edit'; spaceId: SpaceId }
+  /** `theme` opens the editor with its theme panel showing. */
+  | { type: 'space.edit'; spaceId: SpaceId | 'new'; theme?: boolean }
   | { type: 'folder.rename'; folderId: FolderId }
   | { type: 'toast'; message: string }

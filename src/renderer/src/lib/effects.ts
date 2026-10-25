@@ -19,7 +19,7 @@ export function handleCommand(cmd: ShellCommand): void {
       useUi.setState({ findOpen: false })
       break
     case 'space.edit':
-      useUi.setState({ spaceEditor: cmd.spaceId })
+      useUi.setState({ spaceEditor: cmd.spaceId, themePanel: cmd.theme ? 'standalone' : null })
       break
     case 'folder.rename':
       revealFolder(cmd.folderId)
@@ -47,12 +47,17 @@ function revealFolder(folderId: FolderId): void {
 
 /**
  * UI state → main process. The shell is raised above the page whenever a
- * modal overlay (palette, sidebar peek) is showing.
+ * modal overlay (palette, sidebar peek, the space editor and its theme panel) is showing.
  */
 export function startUiEffects(): void {
   let overlay = false
-  useUi.subscribe((s) => {
-    const next = s.palette !== null || s.peek
+  useUi.subscribe((s, prev) => {
+    // The editor lives in the sidebar: with the sidebar collapsed, reveal it as a peek.
+    if (s.spaceEditor !== null && prev.spaceEditor === null && !s.peek && useBrowser.getState().window.sidebarCollapsed) {
+      useUi.setState({ peek: true })
+      return
+    }
+    const next = s.palette !== null || s.peek || s.spaceEditor !== null
     if (next !== overlay) {
       overlay = next
       send('window.setOverlay', next)

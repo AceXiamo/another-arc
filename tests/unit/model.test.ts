@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { sanitizeSpaceTheme } from '@shared/theme'
 import { BrowserModel, type FolderData, type ModelListener, type SpaceData, type TabData } from '../../src/main/tabs/model'
 
 function makeListener() {
@@ -25,6 +26,7 @@ function space(id: string): SpaceData {
     name: id,
     icon: '•',
     color: '#000000',
+    theme: sanitizeSpaceTheme(null),
     profileId: 'default',
     pinnedTabIds: [],
     savedIds: [],
@@ -382,5 +384,31 @@ describe('BrowserModel folders', () => {
     m.addTab({ ...tab('saved', 's2'), savedUrl: 'https://saved.test/' })
     expect(m.getSpace('s2')!.savedIds).toEqual(['saved'])
     expect(m.getSpace('s2')!.activeTabId).toBeNull()
+  })
+
+  it('favorites are bookmarks: entering them keeps the page, today clears it', () => {
+    const { m } = withFolders()
+    m.moveTab('a', { spaceId: 's1', pinned: true, index: 0 })
+    expect(m.getTab('a')).toMatchObject({ pinned: true, folderId: null, savedUrl: 'https://a.test/' })
+    expect(m.getSpace('s1')!.pinnedTabIds).toEqual(['a'])
+    // Favorite -> folder keeps the saved page; folder -> favorite too.
+    m.updateTab('a', { url: 'https://elsewhere.test/' })
+    m.moveTab('a', { spaceId: 's1', pinned: false, folderId: 'f1', index: 0 })
+    expect(m.getTab('a')).toMatchObject({ pinned: false, folderId: 'f1', savedUrl: 'https://a.test/' })
+    m.moveTab('a', { spaceId: 's1', pinned: true, index: 0 })
+    expect(m.getTab('a')).toMatchObject({ pinned: true, folderId: null, savedUrl: 'https://a.test/' })
+    // Back to today's list: an ordinary tab.
+    m.moveTab('a', { spaceId: 's1', pinned: false, index: 0 })
+    expect(m.getTab('a')).toMatchObject({ pinned: false, savedUrl: '' })
+    expect(m.getSpace('s1')!.tabIds[0]).toBe('a')
+  })
+
+  it('gives favorites stored without a saved page one on load', () => {
+    const { listener } = makeListener()
+    const m = new BrowserModel(listener)
+    m.load([space('s1')], [{ ...tab('fav', 's1', true), url: 'https://fav.test/', title: 'Fav' }], 's1')
+    expect(m.getTab('fav')).toMatchObject({ pinned: true, savedUrl: 'https://fav.test/', savedTitle: 'Fav' })
+    expect(m.getSpace('s1')!.pinnedTabIds).toEqual(['fav'])
+    expect(m.getSpace('s1')!.savedIds).toEqual([])
   })
 })

@@ -1,4 +1,4 @@
-import { BaseWindow, WebContentsView, type Rectangle, type WebContents } from 'electron'
+import { BaseWindow, screen, systemPreferences, WebContentsView, type Rectangle, type WebContents } from 'electron'
 import { LAYOUT, pageBounds, pageRadius, type LayoutInput, type Rect } from '@shared/layout'
 
 export interface WindowLayout extends LayoutInput {}
@@ -24,7 +24,13 @@ export interface BrowserWindowOptions {
  * tab's view is attached; background tabs are detached, which lets Chromium
  * throttle them.
  */
+/** Title-bar drag: cursor polling interval, click slop and a safety cap if the release is never reported. */
+const DRAG_POLL_MS = 8
+const DRAG_THRESHOLD = 3
+const DRAG_MAX_MS = 60_000
+
 export class BrowserWindowController {
+  private dragTimer: NodeJS.Timeout | null = null
   readonly win: BaseWindow
   readonly shell: WebContentsView
   private page: WebContentsView | null = null
@@ -44,6 +50,9 @@ export class BrowserWindowController {
       show: false,
       title: 'Another Arc',
       titleBarStyle: 'hiddenInset',
+      // Like Chrome: the first click on an inactive window already reaches the
+      // shell, so its title-bar areas drag and its sidebar responds right away.
+      acceptFirstMouse: true,
       trafficLightPosition: LAYOUT.trafficLights,
       backgroundColor: opts.backgroundColor,
       fullscreenable: true
@@ -184,6 +193,50 @@ export class BrowserWindowController {
       if (surface.visible) this.win.contentView.addChildView(surface.view)
     }
     if (this.overlay) this.win.contentView.addChildView(this.shell)
+  }
+
+  // -- title bar -------------------------------------------------------------
+
+  /**
+   * Shell-driven title-bar drag. `app-region: drag` is not honoured for the
+   * shell's WebContentsView everywhere, so the title-bar areas also report
+   * pointer down/up and main moves the window with the cursor in between.
+   * Positions are absolute (start position + cursor delta): when the native
+   * drag does run, both land on the same spot. The cursor is polled because
+   * the page stops seeing pointer moves once the window follows the pointer.
+   */
+  beginDrag(): void {
+    this.endDrag()
+    if (this.destroyed || this.win.isFullScreen()) return
+    const cursor = screen.getCursorScreenPoint()
+    const [x, y] = this.win.getPosition() as [number, number]
+    const startedAt = Date.now()
+    let moving = false
+    this.dragTimer = setInterval(() => {
+      if (this.destroyed || Date.now() - startedAt > DRAG_MAX_MS) return this.endDrag()
+      const p = screen.getCursorScreenPoint()
+      const dx = p.x - cursor.x
+      const dy = p.y - cursor.y
+      // A click (or the first half of a double-click) never nudges the window.
+      if (!moving && Math.hypot(dx, dy) < DRAG_THRESHOLD) return
+      moving = true
+      this.win.setPosition(x + dx, y + dy)
+    }, DRAG_POLL_MS)
+  }
+
+  endDrag(): void {
+    if (this.dragTimer) clearInterval(this.dragTimer)
+    this.dragTimer = null
+  }
+
+  /** Double-click on a title-bar area: the system setting (zoom by default, minimize, or nothing). */
+  titleBarDoubleClick(): void {
+    if (this.destroyed || this.win.isFullScreen()) return
+    const action = systemPreferences.getUserDefault('AppleActionOnDoubleClick', 'string')
+    if (action === 'None') return
+    if (action === 'Minimize') this.win.minimize()
+    else if (this.win.isMaximized()) this.win.unmaximize()
+    else this.win.maximize()
   }
 
   focusPage(): void {

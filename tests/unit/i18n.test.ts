@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { DEFAULT_LOCALE, isLocale, LOCALES, translate, type MessageKey } from '@shared/i18n'
 import enCommon from '@shared/i18n/locales/en/common'
 import enExtImport from '@shared/i18n/locales/en/ext-import'
+import enTheme from '@shared/i18n/locales/en/theme'
 import enMain from '@shared/i18n/locales/en/main'
 import enShellPages from '@shared/i18n/locales/en/shell-pages'
 import enShellPalette from '@shared/i18n/locales/en/shell-palette'
@@ -9,6 +10,7 @@ import enShellSettings from '@shared/i18n/locales/en/shell-settings'
 import enShellSidebar from '@shared/i18n/locales/en/shell-sidebar'
 import zhCommon from '@shared/i18n/locales/zh-CN/common'
 import zhExtImport from '@shared/i18n/locales/zh-CN/ext-import'
+import zhTheme from '@shared/i18n/locales/zh-CN/theme'
 import zhMain from '@shared/i18n/locales/zh-CN/main'
 import zhShellPages from '@shared/i18n/locales/zh-CN/shell-pages'
 import zhShellPalette from '@shared/i18n/locales/zh-CN/shell-palette'
@@ -22,7 +24,8 @@ const EN: Record<string, Record<string, string>> = {
   'shell-palette': enShellPalette,
   'shell-settings': enShellSettings,
   'shell-pages': enShellPages,
-  'ext-import': enExtImport
+  'ext-import': enExtImport,
+  theme: enTheme
 }
 const ZH: Record<string, Record<string, string>> = {
   common: zhCommon,
@@ -31,7 +34,8 @@ const ZH: Record<string, Record<string, string>> = {
   'shell-palette': zhShellPalette,
   'shell-settings': zhShellSettings,
   'shell-pages': zhShellPages,
-  'ext-import': zhExtImport
+  'ext-import': zhExtImport,
+  theme: zhTheme
 }
 
 const placeholders = (text: string) => [...text.matchAll(/\{(\w+)\}/g)].map((m) => m[1]).sort()

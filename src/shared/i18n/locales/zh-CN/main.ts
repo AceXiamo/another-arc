@@ -13,7 +13,7 @@ const zh: Record<keyof typeof en, string> = {
   'menu.newTab': '新建标签页',
   'menu.reopenTab': '重新打开关闭的标签页',
   'menu.openLocation': '打开地址…',
-  'menu.importArc': '从 Arc 导入…',
+  'menu.importBrowser': '从浏览器导入…',
   'menu.closeTab': '关闭标签页',
   'menu.closeWindow': '关闭窗口',
   'menu.edit': '编辑',

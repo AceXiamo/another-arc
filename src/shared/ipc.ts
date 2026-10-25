@@ -11,6 +11,7 @@ import type {
   ShellSnapshot,
   SitePermission,
   SpaceId,
+  SpaceTheme,
   StatePatch,
   Suggestion,
   TabId
@@ -74,6 +75,8 @@ export interface SpaceInput {
   name: string
   icon: string
   color: string
+  /** Merged into the current theme (or the defaults) and sanitized in main. */
+  theme?: Partial<SpaceTheme>
 }
 
 export interface Point {
@@ -128,6 +131,10 @@ export interface ShellRpc {
   'window.setSidebar': (opts: { width?: number; collapsed?: boolean }) => void
   'window.setOverlay': (open: boolean) => void
   'window.focusPage': () => void
+  /** Title-bar areas: the pointer went down / up (main moves the window in between). */
+  'window.drag': (phase: 'start' | 'end') => void
+  /** Double-click on a title-bar area: the system action (zoom, minimize or nothing). */
+  'window.titleBarDoubleClick': () => void
   'surface.setVisible': (id: SurfaceId, visible: boolean) => void
 
   'history.suggest': (query: string, limit: number) => Suggestion[]
@@ -146,7 +153,7 @@ export interface ShellRpc {
   'extensions.update': (id: string) => void
   'extensions.openOptions': (id: string) => void
   'extensions.contextMenu': (id: string, at: Point) => void
-  /** Browsers (Arc, Chrome) whose last-used profile has extensions to import. Read-only scan. */
+  /** Browsers whose last-used profile has extensions to import. Read-only scan. */
   'extensions.importSources': () => import('./ext-import').ImportSourceSummary[]
   /** Confirm, import and report, all with native dialogs in main. */
   'extensions.importFromBrowser': (source: import('./ext-import').ImportBrowser) => void
@@ -155,8 +162,16 @@ export interface ShellRpc {
   'import.arcSidebarSummary': () => { spaces: number; folders: number; tabs: number; favorites: number } | null
   /** Confirm, import Arc's sidebar into spaces / folders / favorites, report — native dialogs in main. */
   'import.arcSidebar': () => void
-  /** Sidebar and extensions from Arc in one confirmation (File menu, Settings, ⌘T). */
-  'import.arc': () => void
+  /**
+   * Every installed browser and what its chosen profile would bring over.
+   * `chosen` maps a browser id to a profile directory; anything else falls
+   * back to that browser's last-used profile. Read-only scan.
+   */
+  'import.browsers': (chosen?: Record<string, string>) => import('./ext-import').ImportableBrowser[]
+  /** Bookmarks, extensions and logins from one browser profile, in one confirmation. */
+  'import.run': (browser: import('./ext-import').ImportBrowser, profileDir?: string) => void
+  /** Same, for whichever browser has the most to bring over (palette). */
+  'import.best': () => void
 
   'downloads.open': (id: string) => void
   'downloads.reveal': (id: string) => void
