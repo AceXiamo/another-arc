@@ -13,6 +13,15 @@ export default {
 
   // Downloads page
   'downloads.clearCompleted': 'Clear completed',
+  'downloads.started': 'Downloading “{name}”',
+  'downloads.openFolder': 'Open folder',
+  'downloads.open': 'Open',
+  'downloads.retry': 'Retry',
+  'downloads.today': 'Today',
+  'downloads.yesterday': 'Yesterday',
+  'downloads.earlier': 'Earlier',
+  'downloads.left': '{time} left',
+  'downloads.dragHint': 'Drag it into Finder or another app',
   'downloads.empty': 'No downloads yet',
   'downloads.emptyHint': 'Files you download will show up here.',
   'downloads.pause': 'Pause',
@@ -23,8 +32,6 @@ export default {
   'downloads.status.interrupted': 'Interrupted',
   'downloads.status.paused': 'Paused · {size}',
 
-  // Extensions page (the rest of its strings are in shell-settings)
-  'extensions.page.emptyHint': 'Load an unpacked extension from a folder to get started.',
 
   // Empty space placeholder. {keys} is the ⌘T shortcut.
   'status.empty.title': '{space} has no tabs yet',

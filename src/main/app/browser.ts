@@ -3,14 +3,15 @@ import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 import {
   app,
+  BrowserWindow,
   clipboard,
   dialog,
   Menu,
   nativeTheme,
+  screen,
   session,
   webContents,
   WebContentsView,
-  type BrowserWindow,
   type IpcMainInvokeEvent,
   type WebContents
 } from 'electron'
@@ -18,7 +19,7 @@ import { agentSnippet, agentUrl, type AgentInfo, type AgentSnippet } from '@shar
 import { DEFAULT_PROFILE_ID, DEFAULT_SPACE, DEFAULT_WINDOW_STATE } from '@shared/defaults'
 import type { ImportableBrowser, ImportBrowser } from '@shared/ext-import'
 import { chromeColor } from '@shared/theme'
-import { clampSidebarWidth, SURFACE_FRAME_PREFIX, surfaceBounds, SURFACES, type Rect, type SurfaceId } from '@shared/layout'
+import { clampSidebarWidth, FLIGHT_FRAME, SURFACE_FRAME_PREFIX, surfaceBounds, SURFACES, type Rect, type SurfaceId } from '@shared/layout'
 import type { ShellSnapshot, WindowState } from '@shared/types'
 import { translator, type Translate } from '@shared/i18n'
 import { buildSearchUrl, internalUrl, SEARCH_ENGINES, searchTemplate, type InternalPage } from '@shared/url'
@@ -108,6 +109,8 @@ export class Browser {
   private arcImportOffered = false
   /** When a key was last typed anywhere in the app (for ⌘Z). */
   private lastTypedAt = 0
+  private recordingShortcut = false
+  private flightLayer: BrowserWindow | null = null
   /** Last native window background set (see syncWindowBackground). */
   private windowColor = ''
   /** Agents (MCP): loaded the first time they are turned on. */
@@ -170,6 +173,7 @@ export class Browser {
       this.permissions.attach(ses)
       this.downloads.attach(ses)
     })
+    this.downloads.setStartListener((state, asked) => this.downloadStarted(state.id, state.filename, state.mimeType, asked))
 
     const profileSession = this.profiles.defaultSession()
     const browser = this
@@ -342,6 +346,9 @@ export class Browser {
       if (!this.quitting) setTimeout(() => wc.reload(), 300)
     })
     wc.setWindowOpenHandler((details) => {
+      if (details.url === 'about:blank' && details.frameName === FLIGHT_FRAME) {
+        return { action: 'allow', createWindow: (options) => this.createFlightLayer(window, options) }
+      }
       if (details.url === 'about:blank' && details.frameName.startsWith(SURFACE_FRAME_PREFIX)) {
         const id = details.frameName.slice(SURFACE_FRAME_PREFIX.length) as SurfaceId
         if (!(id in SURFACES)) return { action: 'deny' }
@@ -354,6 +361,61 @@ export class Browser {
       if (/^https?:|^chrome-extension:/.test(details.url)) this.tabs.createTab({ url: details.url })
       return { action: 'deny' }
     })
+  }
+
+  /**
+   * The flight layer (see FLIGHT_FRAME): a child window, unlike the surfaces,
+   * because only a window can let clicks through. Lives in the shell's
+   * renderer like them; hidden until a flight starts.
+   */
+  private createFlightLayer(window: BrowserWindowController, options: Electron.BrowserWindowConstructorOptions): WebContents {
+    const layer = new BrowserWindow({
+      ...options,
+      parent: window.win,
+      show: false,
+      frame: false,
+      transparent: true,
+      backgroundColor: '#00000000',
+      hasShadow: false,
+      focusable: false,
+      resizable: false,
+      movable: false,
+      minimizable: false,
+      maximizable: false,
+      fullscreenable: false,
+      skipTaskbar: true,
+      roundedCorners: false
+    })
+    layer.setIgnoreMouseEvents(true)
+    this.flightLayer = layer
+    layer.on('closed', () => {
+      if (this.flightLayer === layer) this.flightLayer = null
+    })
+    return layer.webContents
+  }
+
+  setFlightLayerVisible(visible: boolean): void {
+    const layer = this.flightLayer
+    const win = this.window?.win
+    if (!layer || layer.isDestroyed() || !win || win.isDestroyed()) return
+    if (!visible) {
+      layer.hide()
+      return
+    }
+    layer.setBounds(win.getContentBounds())
+    if (!layer.isVisible()) layer.showInactive()
+  }
+
+  /** Tell the shell, with where the pointer is, so the file can fly from there. */
+  private downloadStarted(id: string, filename: string, mimeType: string | undefined, asked: boolean): void {
+    const win = this.window?.win
+    let from: { x: number; y: number } | null = null
+    if (win && !win.isDestroyed() && win.isVisible() && !asked) {
+      const p = screen.getCursorScreenPoint()
+      const b = win.getContentBounds()
+      if (p.x >= b.x && p.x < b.x + b.width && p.y >= b.y && p.y < b.y + b.height) from = { x: p.x - b.x, y: p.y - b.y }
+    }
+    this.shell.command({ type: 'download.started', id, filename, mimeType, from })
   }
 
   /** Adopt a shell-opened child window as a floating surface view. */
@@ -645,13 +707,23 @@ export class Browser {
     else this.tabs.createTab({ url })
   }
 
+  /** The Extensions page records a shortcut: the keys are for it. */
+  setShortcutRecording(recording: boolean): void {
+    this.recordingShortcut = recording
+    this.extensions.setRecording(recording)
+  }
+
   handleReservedKeys(event: Electron.Event, input: Electron.Input): void {
     if (isTyping(input)) this.lastTypedAt = Date.now()
+    if (this.recordingShortcut) return
     const command = reservedCommandFor(input)
     if (command) {
       event.preventDefault()
       this.runCommand(command)
     } else if (isReservedKeyUp(input)) {
+      event.preventDefault()
+    } else if (this.extensions.handleKey(input)) {
+      // An extension's chrome.commands shortcut.
       event.preventDefault()
     }
   }

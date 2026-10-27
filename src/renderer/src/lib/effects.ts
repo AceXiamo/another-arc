@@ -38,6 +38,9 @@ export function handleCommand(cmd: ShellCommand): void {
     case 'sitePanel.dismiss':
       dismissSitePanel()
       break
+    case 'download.started':
+      useUi.setState((s) => ({ flights: [...s.flights, { id: cmd.id, filename: cmd.filename, mimeType: cmd.mimeType, from: cmd.from }] }))
+      break
   }
 }
 

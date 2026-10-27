@@ -1,113 +1,215 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import type { ImportSourceSummary } from '@shared/ext-import'
 import type { ExtensionInfo } from '@shared/types'
-import { Icon } from '../../components/Icon'
+import { Icon, type IconName } from '../../components/Icon'
 import { useT } from '../../lib/i18n'
 import { rpc, send } from '../../lib/rpc'
-import { useBrowser } from '../../stores/browser'
-import { EmptyNote, PageLayout, PrimaryButton, SmallButton, Toggle } from './PageLayout'
+import { selectActiveTab, useBrowser } from '../../stores/browser'
+import ExtensionDetails from './ExtensionDetails'
+import { ExtensionIcon, useExtensionsNav } from './extension-ui'
+import { EmptyNote, PageLayout, PrimaryButton, SecondaryButton, SmallButton, Toggle } from './PageLayout'
 
-function PermissionList({ ext }: { ext: ExtensionInfo }) {
+const STORE_URL = 'https://chromewebstore.google.com/category/extensions'
+/** Past this many, the list gets a search field. */
+const SEARCH_FROM = 7
+
+/** browser://extensions?id=<id> shows one extension, like chrome://extensions/?id=. */
+function detailsId(url: string): string | null {
+  const id = /[?&]id=([a-p]{32})\b/.exec(url)?.[1]
+  return id ?? null
+}
+
+export default function ExtensionsPage() {
+  const url = useBrowser((s) => selectActiveTab(s)?.url ?? '')
+  const id = detailsId(url)
+  return id ? <ExtensionDetails key={id} id={id} /> : <ExtensionList />
+}
+
+function ExtensionList() {
   const t = useT()
-  const all = [...ext.permissions, ...ext.hostPermissions]
-  if (all.length === 0) return <div className="px-4 pb-3 text-[12px] text-[var(--text-3)]">{t('extensions.card.noPermissions')}</div>
-  const broad = ext.hostPermissions.some((p) => p === '<all_urls>' || p.startsWith('*://*/') || p === 'http://*/*' || p === 'https://*/*')
+  const extensions = useBrowser((s) => s.extensions)
+  const [query, setQuery] = useState('')
+  const sorted = useMemo(() => [...extensions].sort((a, b) => a.name.localeCompare(b.name)), [extensions])
+  const q = query.trim().toLowerCase()
+  const shown = q ? sorted.filter((e) => `${e.name} ${e.description}`.toLowerCase().includes(q)) : sorted
   return (
-    <div className="flex flex-col gap-2 px-4 pb-3">
-      {broad && (
-        <div className="flex items-center gap-1.5 text-[12px] font-medium text-[var(--danger)]">
-          <Icon name="warning" size={13} strokeWidth={1.9} />
-          {t('extensions.card.broadAccess')}
+    <PageLayout
+      title={t('page.extensions')}
+      actions={
+        <div className="flex items-center gap-1.5">
+          <SecondaryButton icon="store" onClick={() => send('tabs.create', { url: STORE_URL })}>
+            {t('extensions.page.store')}
+          </SecondaryButton>
+          <PrimaryButton onClick={() => send('extensions.install')}>
+            <Icon name="plus" size={14} strokeWidth={2} />
+            {t('extensions.page.load')}
+          </PrimaryButton>
         </div>
+      }
+    >
+      {extensions.length === 0 ? (
+        <EmptyNote art="extensions" title={t('extensions.page.empty')} hint={t('extensions.page.emptyHint')} />
+      ) : (
+        <>
+          <Attention extensions={sorted} />
+          {extensions.length >= SEARCH_FROM && <SearchField value={query} onChange={setQuery} />}
+          {shown.length === 0 ? (
+            <p className="px-1 text-[13px] text-[var(--text-3)]">{t('extensions.page.noMatch', { query: query.trim() })}</p>
+          ) : (
+            <div className="flex flex-col rounded-[12px] bg-[var(--surface-2)] shadow-[var(--card-shadow)] [&>*+*]:shadow-[inset_0_0.5px_0_var(--line)]">
+              {shown.map((ext) => (
+                <ExtensionRow key={ext.id} ext={ext} />
+              ))}
+            </div>
+          )}
+        </>
       )}
-      <div className="flex flex-wrap gap-1">
-        {all.map((p) => (
-          <code
-            key={p}
-            className="rounded-[5px] bg-[var(--surface)] px-1.5 py-0.5 font-mono text-[11px] text-[var(--text-2)] shadow-[inset_0_0_0_0.5px_var(--line)]"
-          >
-            {p}
-          </code>
-        ))}
+      <ImportLinks />
+    </PageLayout>
+  )
+}
+
+function ExtensionRow({ ext }: { ext: ExtensionInfo }) {
+  const t = useT()
+  const nav = useExtensionsNav()
+  const hasErrors = ext.errorCount > 0
+  return (
+    <div className="group relative flex min-h-[60px] items-center gap-3 px-4 py-2.5 first:rounded-t-[12px] last:rounded-b-[12px] hover:bg-[var(--hover)] has-[>button:first-child:active]:bg-[var(--press)]">
+      {/* The whole row opens the details; the controls sit above it. */}
+      <button
+        aria-label={t('extensions.page.open', { name: ext.name })}
+        onClick={() => nav.open(ext.id)}
+        className="absolute inset-0 rounded-[inherit] focus-visible:outline-offset-[-2px]"
+      />
+      <ExtensionIcon ext={ext} size={28} />
+      <div className="pointer-events-none min-w-0 flex-1">
+        <div className="flex items-baseline gap-1.5">
+          <span className={`truncate text-[13.5px] font-medium ${ext.enabled ? 'text-[var(--text)]' : 'text-[var(--text-2)]'}`}>
+            {ext.name}
+          </span>
+          <span className="shrink-0 text-[11.5px] tabular-nums text-[var(--text-3)]">{ext.version}</span>
+        </div>
+        {ext.description && <p className="mt-0.5 truncate text-[12px] text-[var(--text-3)]">{ext.description}</p>}
       </div>
+      {hasErrors && (
+        <span className="pointer-events-none flex shrink-0 items-center gap-1 rounded-full bg-[var(--danger-soft)] px-2 py-0.5 text-[11px] font-medium text-[var(--danger)]">
+          <Icon name="warning" size={11} strokeWidth={2} />
+          {t('extensions.row.error')}
+        </span>
+      )}
+      {ext.hasAction && ext.enabled && (
+        <button
+          title={ext.pinned ? t('extensions.action.unpin') : t('extensions.action.pin')}
+          aria-pressed={ext.pinned}
+          onClick={() => send('extensions.setPinned', ext.id, !ext.pinned)}
+          className={`relative grid h-7 w-7 shrink-0 place-items-center rounded-[7px] transition-[opacity,scale,background-color,color] duration-150 ease-out hover:bg-[var(--hover)] active:scale-[0.96] active:bg-[var(--press)] ${
+            ext.pinned ? 'text-[var(--accent)]' : 'text-[var(--ink-faint)] opacity-0 group-hover:opacity-100 focus-visible:opacity-100'
+          }`}
+        >
+          <Icon name="pin" size={14} strokeWidth={1.8} />
+        </button>
+      )}
+      <span className="relative">
+        <Toggle
+          checked={ext.enabled}
+          label={t('extensions.action.enable')}
+          onChange={(v) => void rpc('extensions.setEnabled', ext.id, v)}
+        />
+      </span>
+      <Icon name="chevronRight" size={14} strokeWidth={1.8} className="pointer-events-none -mr-1 text-[var(--ink-faint)]" />
     </div>
   )
 }
 
-function ExtensionCard({ ext }: { ext: ExtensionInfo }) {
+/** What needs the user: user scripts waiting for permission, extensions with errors. */
+function Attention({ extensions }: { extensions: ExtensionInfo[] }) {
   const t = useT()
-  const [open, setOpen] = useState(false)
-  const [busy, setBusy] = useState(false)
-  const run = async (fn: () => Promise<unknown>) => {
-    setBusy(true)
-    try {
-      await fn()
-    } finally {
-      setBusy(false)
+  const nav = useExtensionsNav()
+  const [busy, setBusy] = useState<string | null>(null)
+  const items: Array<{
+    id: string
+    icon: IconName
+    text: string
+    action: string
+    run: () => void
+    tone: 'accent' | 'danger'
+  }> = []
+  for (const ext of extensions) {
+    if (!ext.enabled) continue
+    if (ext.userScripts === false) {
+      items.push({
+        id: `${ext.id}:us`,
+        icon: 'code',
+        tone: 'accent',
+        text: t('extensions.attention.userScripts', { name: ext.name }),
+        action: t('extensions.attention.turnOn'),
+        run: () => {
+          setBusy(`${ext.id}:us`)
+          rpc('extensions.setUserScripts', ext.id, true).finally(() => setBusy(null))
+        }
+      })
+    }
+    if (ext.errorCount > 0) {
+      items.push({
+        id: `${ext.id}:err`,
+        icon: 'warning',
+        tone: 'danger',
+        text: t(ext.error ? 'extensions.attention.loadFailed' : 'extensions.attention.errors', { name: ext.name }),
+        action: t('extensions.attention.view'),
+        run: () => nav.open(ext.id)
+      })
     }
   }
+  if (items.length === 0) return null
   return (
-    <div className="flex flex-col rounded-[12px] bg-[var(--surface-2)] shadow-[var(--card-shadow)]">
-      <div className="flex items-start gap-3 p-4">
-        {ext.icon ? (
-          <img src={ext.icon} width={36} height={36} alt="" className={`shrink-0 ${ext.enabled ? '' : 'opacity-50 grayscale'}`} />
-        ) : (
-          <div className="grid h-9 w-9 shrink-0 place-items-center rounded-[9px] bg-[var(--surface-3)] text-[var(--ink)]">
-            <Icon name="puzzle" size={18} />
-          </div>
-        )}
-        <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-2">
-            <span className={`truncate font-semibold ${ext.enabled ? '' : 'text-[var(--text-2)]'}`}>{ext.name}</span>
-            <span className="shrink-0 text-[12px] tabular-nums text-[var(--text-3)]">{ext.version}</span>
-            <span className="shrink-0 rounded-[4px] bg-[var(--hover)] px-1 py-px text-[10px] font-semibold text-[var(--text-2)]">
-              MV{ext.manifestVersion}
-            </span>
-          </div>
-          {ext.description && <p className="mt-1 line-clamp-2 text-[12px] leading-relaxed text-[var(--text-2)]">{ext.description}</p>}
-          <p className="mt-1 truncate font-mono text-[11px] text-[var(--text-3)]" title={ext.sourcePath}>
-            {ext.id}
-          </p>
+    <div className="flex flex-col gap-1.5">
+      {items.map((item) => (
+        <div
+          key={item.id}
+          className={`anim-fade flex items-center gap-2.5 rounded-[10px] py-1.5 pl-3 pr-1.5 text-[12.5px] ${
+            item.tone === 'danger' ? 'bg-[var(--danger-soft)] text-[var(--danger)]' : 'bg-[var(--accent-soft)] text-[var(--text)]'
+          }`}
+        >
+          <Icon name={item.icon} size={14} strokeWidth={1.9} className={item.tone === 'accent' ? 'text-[var(--accent)]' : ''} />
+          <span className="min-w-0 flex-1 text-pretty">{item.text}</span>
+          <button
+            disabled={busy === item.id}
+            onClick={item.run}
+            className={`h-7 shrink-0 rounded-[7px] px-2.5 text-[12px] font-medium transition-[scale,background-color,opacity] duration-150 ease-out active:scale-[0.96] disabled:opacity-50 ${
+              item.tone === 'danger'
+                ? 'hover:bg-[color-mix(in_oklab,var(--danger)_14%,transparent)]'
+                : 'bg-[var(--accent-fill)] text-white hover:brightness-110'
+            }`}
+          >
+            {item.action}
+          </button>
         </div>
-        <Toggle checked={ext.enabled} label={t('extensions.card.enable')} onChange={(v) => void run(() => rpc('extensions.setEnabled', ext.id, v))} />
-      </div>
-      {ext.error && (
-        <div className="mx-4 mb-3 flex items-start gap-1.5 rounded-[8px] bg-[var(--danger-soft)] px-2.5 py-2 text-[12px] text-[var(--danger)]">
-          <Icon name="warning" size={13} className="mt-px" />
-          <span className="break-all">{ext.error}</span>
-        </div>
-      )}
-      {open && <PermissionList ext={ext} />}
-      <div className="flex flex-wrap items-center gap-0.5 px-2 py-1.5 shadow-[inset_0_0.5px_0_var(--line)]">
-        <SmallButton onClick={() => setOpen((v) => !v)}>{open ? t('extensions.card.hidePermissions') : t('extensions.card.showPermissions')}</SmallButton>
-        {ext.hasAction && (
-          <SmallButton onClick={() => send('extensions.setPinned', ext.id, !ext.pinned)}>
-            {ext.pinned ? t('extensions.card.unpin') : t('extensions.card.pin')}
-          </SmallButton>
-        )}
-        {ext.optionsUrl && (
-          <SmallButton disabled={!ext.enabled} onClick={() => send('extensions.openOptions', ext.id)}>
-            {t('extensions.card.options')}
-          </SmallButton>
-        )}
-        <SmallButton disabled={busy} onClick={() => void run(() => rpc('extensions.update', ext.id))}>
-          {t('extensions.card.update')}
-        </SmallButton>
-        <div className="flex-1" />
-        <SmallButton danger disabled={busy} onClick={() => void run(() => rpc('extensions.uninstall', ext.id))}>
-          {t('extensions.card.remove')}
-        </SmallButton>
-      </div>
+      ))}
     </div>
   )
 }
 
-/** "Import from Arc" (and Chrome): shown only for browsers detected with extensions. */
-function ImportButtons() {
+function SearchField({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+  const t = useT()
+  return (
+    <label className="flex h-8 items-center gap-2 rounded-[9px] bg-[var(--surface-2)] px-2.5 shadow-[var(--card-shadow)] focus-within:shadow-[inset_0_0_0_1px_var(--focus),0_0_0_3px_color-mix(in_oklch,var(--space)_18%,transparent)]">
+      <Icon name="search" size={14} className="text-[var(--ink-faint)]" />
+      <input
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        onKeyDown={(e) => e.key === 'Escape' && onChange('')}
+        placeholder={t('extensions.page.search')}
+        className="min-w-0 flex-1 bg-transparent text-[13px] outline-none placeholder:text-[var(--text-3)]"
+      />
+    </label>
+  )
+}
+
+/** "Import from Arc" (and other browsers): only for browsers found with extensions. */
+function ImportLinks() {
   const t = useT()
   const [sources, setSources] = useState<ImportSourceSummary[]>([])
   const [busy, setBusy] = useState<ImportSourceSummary['id'] | null>(null)
-  const refresh = () => rpc('extensions.importSources').then(setSources, () => undefined)
   useEffect(() => {
     let alive = true
     rpc('extensions.importSources').then(
@@ -118,6 +220,7 @@ function ImportButtons() {
       alive = false
     }
   }, [])
+  if (sources.length === 0) return null
   const run = async (source: ImportSourceSummary) => {
     setBusy(source.id)
     try {
@@ -126,51 +229,25 @@ function ImportButtons() {
       // Main reports everything in its own dialogs.
     } finally {
       setBusy(null)
-      void refresh()
+      rpc('extensions.importSources').then(setSources, () => undefined)
     }
   }
-  return sources.map((source) => (
-    <button
-      key={source.id}
-      disabled={busy !== null}
-      title={t('extImport.button.title', { browser: source.browserName, profile: source.profileName })}
-      onClick={() => void run(source)}
-      className="flex h-[30px] shrink-0 items-center gap-1.5 rounded-[8px] bg-[var(--surface-2)] px-3 text-[12.5px] font-medium text-[var(--text)] shadow-[var(--card-shadow)] hover:bg-[var(--surface-3)] active:brightness-95 disabled:opacity-50 disabled:hover:bg-[var(--surface-2)]"
-    >
-      <Icon name="download" size={14} strokeWidth={2} />
-      {busy === source.id ? t('extImport.button.busy') : t('extImport.button', { browser: source.browserName })}
-    </button>
-  ))
-}
-
-export default function ExtensionsPage() {
-  const t = useT()
-  const extensions = useBrowser((s) => s.extensions)
   return (
-    <PageLayout
-      title={t('page.extensions')}
-      actions={
-        <div className="flex items-center gap-2">
-          <ImportButtons />
-          <PrimaryButton onClick={() => send('extensions.install')}>
-            <Icon name="plus" size={14} strokeWidth={2} />
-            {t('extensions.page.load')}
-          </PrimaryButton>
-        </div>
-      }
-    >
-      <p className="-mt-3 px-1 text-[12px] leading-relaxed text-[var(--text-3)]">
-        {t('extensions.page.intro')}
-      </p>
-      {extensions.length === 0 ? (
-        <EmptyNote art="extensions" title={t('extensions.page.empty')} hint={t('extensions.page.emptyHint')} />
-      ) : (
-        <div className="flex flex-col gap-3">
-          {extensions.map((ext) => (
-            <ExtensionCard key={ext.id} ext={ext} />
-          ))}
-        </div>
-      )}
-    </PageLayout>
+    <div className="-mt-3 flex flex-wrap items-center gap-0.5 px-0.5">
+      {sources.map((source) => (
+        <SmallButton key={source.id} disabled={busy !== null} onClick={() => void run(source)}>
+          <span
+            className="flex items-center gap-1.5"
+            title={t('extImport.button.title', {
+              browser: source.browserName,
+              profile: source.profileName
+            })}
+          >
+            <Icon name="download" size={13} strokeWidth={1.9} />
+            {busy === source.id ? t('extImport.button.busy') : t('extImport.button', { browser: source.browserName })}
+          </span>
+        </SmallButton>
+      ))}
+    </div>
   )
 }

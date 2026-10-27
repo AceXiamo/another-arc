@@ -9,6 +9,9 @@
 //   worker, and the TypeError kills the whole worker. We add the API and
 //   forward it to main, which shows the panel in an extension window.
 //
+//   Nor does chrome.userScripts, which user script managers (Tampermonkey)
+//   need. We add it on top of chrome.scripting (see userScriptsShim).
+//
 // Late pass, after the library. Electron 44 has more gaps that many real
 // extensions trip over:
 //
@@ -33,6 +36,8 @@ const CHANNEL_LISTENER = 'arc-compat:listener'
 const CHANNEL_CONTEXTS = 'arc-compat:getContexts'
 const CHANNEL_SIDE_PANEL = 'arc-compat:sidePanel'
 const CHANNEL_SIDE_PANEL_EVENT = 'arc-compat:sidePanelEvent'
+const CHANNEL_USER_SCRIPTS = 'arc-compat:userScripts'
+const CHANNEL_USER_SCRIPTS_STATE = 'arc-compat:userScriptsState'
 
 type Deliver = (name: string, ...args: unknown[]) => void
 
@@ -113,6 +118,275 @@ function installEarly(): void {
     runInMainWorld(sidePanelShim)
   } catch (error) {
     console.error('[arc] sidePanel shim failed', error)
+  }
+  installUserScripts()
+}
+
+/**
+ * chrome.userScripts, for extensions asking for it (Tampermonkey & co). It is
+ * there only while the user allows it ("Allow User Scripts" on the Extensions
+ * page): extensions test `chrome.userScripts` to tell the user to turn it on.
+ * Pages learn that synchronously, before their scripts run. Workers cannot
+ * (a synchronous message to a worker without its handler in place hangs it),
+ * so there the API appears a moment later, before any extension's own
+ * start-up work gets to it.
+ */
+function installUserScripts(): void {
+  let wanted = false
+  try {
+    wanted =
+      runInMainWorld(() => {
+        const chrome = (globalThis as { chrome?: any }).chrome
+        const permissions = chrome?.runtime?.getManifest?.()?.permissions
+        return Array.isArray(permissions) && permissions.includes('userScripts') && Boolean(chrome.scripting)
+      }) === true
+  } catch {
+    return
+  }
+  if (!wanted) return
+  let initial: boolean | null = null
+  if (!isWorker) {
+    try {
+      initial = ipcRenderer.sendSync(CHANNEL_USER_SCRIPTS_STATE) === true
+    } catch {
+      initial = false
+    }
+  }
+  let deliver: ((allowed: boolean) => void) | null = null
+  let pending: boolean | null = null
+  if (initial === null) {
+    invoke(CHANNEL_USER_SCRIPTS, 'state').then(
+      (value) => {
+        if (deliver) deliver(value === true)
+        else pending = value === true
+      },
+      () => {
+        if (deliver) deliver(false)
+        else pending = false
+      }
+    )
+  }
+  const bridge = {
+    initial,
+    call: (method: string, ...args: unknown[]) => invoke(CHANNEL_USER_SCRIPTS, method, ...args),
+    onState(cb: (allowed: boolean) => void) {
+      deliver = cb
+      if (pending !== null) cb(pending)
+    }
+  }
+  try {
+    exposeInMainWorld('__arcUserScripts', bridge)
+    runInMainWorld(userScriptsShim)
+  } catch (error) {
+    console.error('[arc] userScripts shim failed', error)
+  }
+}
+
+/**
+ * chrome.userScripts on top of the extension's own chrome.scripting dynamic
+ * content scripts (see src/main/extensions/user-scripts.ts). Runs in the
+ * extension's JS world and must be self-contained.
+ */
+function userScriptsShim(): void {
+  const g = globalThis as unknown as {
+    chrome?: any
+    __arcUserScripts?: {
+      initial: boolean | null
+      call(method: string, ...args: unknown[]): Promise<any>
+      onState(cb: (allowed: boolean) => void): void
+    }
+  }
+  const bridge = g.__arcUserScripts
+  try {
+    delete (g as Record<string, unknown>).__arcUserScripts
+  } catch {
+    // exposed bindings may be non-configurable
+  }
+  const chrome = g.chrome
+  if (!bridge || !chrome?.runtime?.id || !chrome.scripting || Object.isFrozen(chrome) || 'userScripts' in chrome) return
+
+  // Keep in sync with NATIVE_PREFIX in user-scripts.ts.
+  const PREFIX = 'arc-us-'
+  const native = chrome.scripting
+  const nGet = native.getRegisteredContentScripts.bind(native)
+  const nRegister = native.registerContentScripts.bind(native)
+  const nUpdate = native.updateContentScripts.bind(native)
+  const nUnregister = native.unregisterContentScripts.bind(native)
+  const nExecute = native.executeScript.bind(native)
+  const ours = (id: unknown) => typeof id === 'string' && id.startsWith(PREFIX)
+
+  const call = (method: string, ...args: unknown[]): Promise<any> =>
+    bridge.call(method, ...args).catch((error: unknown) => {
+      const message = String((error as Error)?.message ?? error)
+      throw new Error(message.replace(/^Error invoking remote method '[^']*': (?:\w*Error: )?/, ''))
+    })
+  const plain = (v: unknown) => (v === undefined || v === null ? null : JSON.parse(JSON.stringify(v)))
+  // One call at a time, in order: register() then unregister() must not race.
+  let chain: Promise<unknown> = Promise.resolve()
+  const serial = <T>(fn: () => Promise<T>): Promise<T> => {
+    const p = chain.then(fn)
+    chain = p.then(
+      () => undefined,
+      () => undefined
+    )
+    return p
+  }
+  /** Promise, or callback when one is given, like every chrome.* method. */
+  const finish = (p: Promise<unknown>, cb?: unknown) => {
+    if (typeof cb !== 'function') return p
+    p.then(
+      (result) => (cb as (r: unknown) => void)(result),
+      (error) => {
+        console.error(error)
+        ;(cb as () => void)()
+      }
+    )
+    return undefined
+  }
+
+  // Our native scripts are not the extension's own: chrome.scripting does
+  // not list them, and unregistering "all" leaves them alone.
+  const hidden: Record<string, unknown> = {
+    getRegisteredContentScripts(filter?: unknown, cb?: unknown) {
+      if (typeof filter === 'function') [cb, filter] = [filter, undefined]
+      return finish(
+        nGet(filter ?? undefined).then((list: Array<{ id: string }>) => list.filter((s) => !ours(s.id))),
+        cb
+      )
+    },
+    unregisterContentScripts(filter?: unknown, cb?: unknown) {
+      if (typeof filter === 'function') [cb, filter] = [filter, undefined]
+      const ids = (filter as { ids?: unknown } | undefined)?.ids
+      const p = Array.isArray(ids)
+        ? nUnregister(filter)
+        : nGet().then((list: Array<{ id: string }>) => {
+            const own = list.filter((s) => !ours(s.id)).map((s) => s.id)
+            return own.length > 0 ? nUnregister({ ids: own }) : undefined
+          })
+      return finish(p, cb)
+    }
+  }
+  const scripting = new Proxy(native, {
+    get(target, prop) {
+      if (typeof prop === 'string' && prop in hidden) return hidden[prop]
+      const value = Reflect.get(target, prop, target)
+      return typeof value === 'function' ? value.bind(target) : value
+    }
+  })
+  try {
+    Object.defineProperty(chrome, 'scripting', { value: scripting, enumerable: true, configurable: true, writable: true })
+  } catch {
+    // Not replaceable: our scripts show in chrome.scripting, which is harmless.
+  }
+
+  type Native = { id: string; matches: string[]; excludeMatches?: string[]; js: string[]; allFrames?: boolean; runAt?: string; world?: string }
+  const same = (a: Native, b: Native) =>
+    a.runAt === b.runAt &&
+    (a.world ?? 'ISOLATED') === (b.world ?? 'ISOLATED') &&
+    Boolean(a.allFrames) === Boolean(b.allFrames) &&
+    JSON.stringify(a.js) === JSON.stringify(b.js) &&
+    JSON.stringify(a.matches) === JSON.stringify(b.matches) &&
+    JSON.stringify(a.excludeMatches ?? []) === JSON.stringify(b.excludeMatches ?? [])
+  // Make the native registrations what main says they should be: the
+  // registry, plus the bridge. Electron forgets dynamic content scripts on
+  // quit and an update reloads the extension, so this also runs at start.
+  const sync = async () => {
+    const wanted: Native[] = await call('native')
+    const present = new Map<string, Native>((await nGet()).filter((s: Native) => ours(s.id)).map((s: Native) => [s.id, s]))
+    const stale = [...present.keys()].filter((id) => !wanted.some((w) => w.id === id))
+    if (stale.length > 0) await nUnregister({ ids: stale })
+    const changed = wanted.filter((w) => present.has(w.id) && !same(w, present.get(w.id)!))
+    if (changed.length > 0) await nUpdate(changed)
+    const missing = wanted.filter((w) => !present.has(w.id))
+    if (missing.length === 0) return
+    try {
+      await nRegister(missing)
+    } catch {
+      // One bad script must not keep the others out.
+      for (const s of missing) await nRegister([s]).catch((error: unknown) => console.warn(`[arc] user script '${s.id}'`, error))
+    }
+  }
+  const register = async (scripts: unknown) => {
+    const { token, native: list } = await call('prepare', 'register', plain(scripts))
+    try {
+      // Natively first: Chromium's own checks (match patterns, files) report here.
+      if (list.length > 0) await nRegister(list)
+    } catch (error) {
+      await call('discard', token).catch(() => undefined)
+      throw error
+    }
+    await call('commit', token)
+    await sync()
+  }
+  const update = async (scripts: unknown) => {
+    const { token } = await call('prepare', 'update', plain(scripts))
+    await call('commit', token)
+    await sync()
+  }
+  const unregister = async (filter: unknown) => {
+    await call('unregister', plain(filter))
+    await sync()
+  }
+  const execute = async (injection: any) => {
+    const { files, world } = await call('prepareExecute', plain({ js: injection?.js, world: injection?.world, worldId: injection?.worldId }))
+    const results = await nExecute({ target: injection?.target, files, world, injectImmediately: injection?.injectImmediately === true })
+    return (results ?? []).map((r: any) => {
+      const out: Record<string, unknown> = { documentId: r.documentId, frameId: r.frameId, result: r.result }
+      if (r.error) out.error = String(r.error?.message ?? r.error)
+      return out
+    })
+  }
+  const configure = async (method: string, arg: unknown) => {
+    await call(method, arg)
+    // The script files carry the world properties.
+    await sync()
+  }
+
+  const api = {
+    register: (scripts: unknown, cb?: unknown) => finish(serial(() => register(scripts)), cb),
+    update: (scripts: unknown, cb?: unknown) => finish(serial(() => update(scripts)), cb),
+    unregister(filter?: unknown, cb?: unknown) {
+      if (typeof filter === 'function') [cb, filter] = [filter, undefined]
+      return finish(
+        serial(() => unregister(filter)),
+        cb
+      )
+    },
+    getScripts(filter?: unknown, cb?: unknown) {
+      if (typeof filter === 'function') [cb, filter] = [filter, undefined]
+      return finish(
+        serial(() => call('get', plain(filter))),
+        cb
+      )
+    },
+    configureWorld: (properties: unknown, cb?: unknown) => finish(serial(() => configure('configureWorld', plain(properties))), cb),
+    getWorldConfigurations: (cb?: unknown) => finish(serial(() => call('getWorlds')), cb),
+    resetWorldConfiguration(worldId?: unknown, cb?: unknown) {
+      if (typeof worldId === 'function') [cb, worldId] = [worldId, undefined]
+      return finish(
+        serial(() => configure('resetWorld', worldId ?? null)),
+        cb
+      )
+    },
+    execute: (injection: unknown, cb?: unknown) => finish(serial(() => execute(injection)), cb),
+    ExecutionWorld: { MAIN: 'MAIN', USER_SCRIPT: 'USER_SCRIPT' }
+  }
+
+  let allowed = bridge.initial === true
+  const setAllowed = (value: boolean) => {
+    allowed = value
+    if (!value) return
+    serial(sync)
+      .catch((error) => console.warn('[arc] could not register user scripts', error))
+      // Main holds the first page of a launch until this.
+      .finally(() => call('hydrated').catch(() => undefined))
+  }
+  if (bridge.initial === null) bridge.onState(setAllowed)
+  else if (allowed) setAllowed(true)
+  try {
+    Object.defineProperty(chrome, 'userScripts', { get: () => (allowed ? api : undefined), enumerable: true, configurable: true })
+  } catch (error) {
+    console.error('[arc] could not add chrome.userScripts', error)
   }
 }
 
@@ -245,8 +519,79 @@ function install(): void {
   try {
     exposeInMainWorld('__arcExtensionCompat', bridge)
     runInMainWorld(mainWorldShim)
+    runInMainWorld(routeUserScriptMessages)
   } catch (error) {
     console.error('[arc] extension compat shim failed', error)
+  }
+}
+
+/**
+ * User scripts run in the extension's isolated world (see user-scripts.ts),
+ * so their messages reach runtime.onMessage / onConnect as a content
+ * script's would; Chrome sends them to onUserScriptMessage /
+ * onUserScriptConnect instead. Deliver page messages to the listeners of
+ * both, each listener once: Tampermonkey adds the same function to both.
+ * Runs in the extension's JS world and must be self-contained.
+ */
+function routeUserScriptMessages(): void {
+  const runtime = (globalThis as { chrome?: any }).chrome?.runtime
+  const permissions = runtime?.getManifest?.()?.permissions
+  if (!Array.isArray(permissions) || !permissions.includes('userScripts')) return
+  if (!runtime.onMessage?.addListener || !runtime.onConnect?.addListener || !runtime.onUserScriptMessage) return
+  const own = `chrome-extension://${runtime.id}/`
+  const fromPage = (sender: any) => sender?.id === runtime.id && typeof sender.url === 'string' && !sender.url.startsWith(own)
+
+  type Fn = (...args: any[]) => unknown
+  const event = () => {
+    const listeners = new Set<Fn>()
+    return {
+      listeners,
+      api: {
+        addListener: (fn: Fn) => void (typeof fn === 'function' && listeners.add(fn)),
+        removeListener: (fn: Fn) => void listeners.delete(fn),
+        hasListener: (fn: Fn) => listeners.has(fn),
+        hasListeners: () => listeners.size > 0
+      }
+    }
+  }
+  const message = event()
+  const userMessage = event()
+  const connect = event()
+  const userConnect = event()
+  const targets = (main: Set<Fn>, user: Set<Fn>, page: boolean) => (page ? [...new Set([...user, ...main])] : [...main])
+
+  runtime.onMessage.addListener((msg: unknown, sender: any, sendResponse: Fn) => {
+    // Chrome's rules across listeners: `true` keeps the channel open for
+    // sendResponse; otherwise a returned promise answers.
+    let keep = false
+    let answer: unknown
+    for (const fn of targets(message.listeners, userMessage.listeners, fromPage(sender))) {
+      try {
+        const r = fn(msg, sender, sendResponse)
+        if (r === true) keep = true
+        else if (answer === undefined && r && typeof (r as Promise<unknown>).then === 'function') answer = r
+      } catch (error) {
+        console.error(error)
+      }
+    }
+    return keep ? true : answer
+  })
+  runtime.onConnect.addListener((port: any) => {
+    for (const fn of targets(connect.listeners, userConnect.listeners, fromPage(port?.sender))) {
+      try {
+        fn(port)
+      } catch (error) {
+        console.error(error)
+      }
+    }
+  })
+  try {
+    runtime.onMessage = message.api
+    runtime.onUserScriptMessage = userMessage.api
+    runtime.onConnect = connect.api
+    runtime.onUserScriptConnect = userConnect.api
+  } catch {
+    // not writable: native routing stays
   }
 }
 
@@ -324,7 +669,7 @@ function mainWorldShim(): void {
 
   if (!chrome.storage) return
 
-  const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b)
+  const same =(a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b)
   const clone = <T>(v: T): T => (v === undefined ? v : structuredClone(v))
 
   const onChanged = makeEvent()

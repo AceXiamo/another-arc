@@ -1,0 +1,15 @@
+{
+  "manifest_version": 3,
+  "name": "User Script Probe",
+  "version": "1.0.0",
+  "description": "Test fixture: chrome.userScripts and chrome.commands, as a user script manager uses them.",
+  "background": { "service_worker": "sw.js" },
+  "permissions": ["userScripts", "storage", "tabs"],
+  "host_permissions": ["http://127.0.0.1/*"],
+  "commands": {
+    "probe-command": {
+      "suggested_key": { "default": "Ctrl+Shift+Y", "mac": "Command+Shift+Y" },
+      "description": "Probe command"
+    }
+  }
+}

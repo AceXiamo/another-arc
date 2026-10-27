@@ -6,6 +6,8 @@ const CHANNEL_LISTENER = 'arc-compat:listener'
 const CHANNEL_CONTEXTS = 'arc-compat:getContexts'
 const CHANNEL_SIDE_PANEL = 'arc-compat:sidePanel'
 const CHANNEL_SIDE_PANEL_EVENT = 'arc-compat:sidePanelEvent'
+const CHANNEL_USER_SCRIPTS = 'arc-compat:userScripts'
+const CHANNEL_USER_SCRIPTS_STATE = 'arc-compat:userScriptsState'
 /** Listener registrations reach main as IPC sent during the worker's first run; let them land. */
 const LISTENER_SETTLE_MS = 150
 const WAKE_TIMEOUT_MS = 4000
@@ -41,6 +43,13 @@ export interface SidePanelBackend {
   call(id: string, method: string, arg: unknown): unknown
 }
 
+/** Main-process implementation of chrome.userScripts (see user-scripts.ts). */
+export interface UserScriptsBackend {
+  /** The user allowed the extension's user scripts ("Allow User Scripts"). */
+  allowed(id: string): boolean
+  call(id: string, method: string, args: unknown[]): Promise<unknown>
+}
+
 export interface InstalledDetails {
   reason: 'install' | 'update'
   previousVersion?: string
@@ -50,7 +59,7 @@ export interface InstalledDetails {
  * Main-process half of src/preload/extension-compat.ts: delivers
  * runtime.onInstalled / onStartup, forwards extension-page storage changes
  * to the extension's service worker, answers runtime.getContexts and
- * carries chrome.sidePanel calls to the side panel backend.
+ * carries chrome.sidePanel and chrome.userScripts calls to their backends.
  */
 export class ExtensionCompat {
   private readonly pendingInstalled = new Map<string, InstalledDetails>()
@@ -67,7 +76,8 @@ export class ExtensionCompat {
     startupListeners: string[],
     private readonly persistStartupListeners: (ids: string[]) => void,
     private readonly contextHost: ContextHost,
-    private readonly sidePanel: SidePanelBackend
+    private readonly sidePanel: SidePanelBackend,
+    private readonly userScripts: UserScriptsBackend
   ) {
     this.startupListeners = new Set(startupListeners)
   }
@@ -113,6 +123,18 @@ export class ExtensionCompat {
       return id && typeof method === 'string' ? this.sidePanel.call(id, method, arg) : undefined
     })
 
+    ipcMain.handle(CHANNEL_USER_SCRIPTS, (event, method: unknown, ...args: unknown[]) => {
+      const id = event.sender.session === this.ses ? extensionIdOf(event.senderFrame?.url ?? '') : null
+      return id && typeof method === 'string' ? this.userScripts.call(id, method, args) : undefined
+    })
+
+    // Extension pages ask synchronously, before their own scripts run, so
+    // chrome.userScripts is there (or not) from the first line, as in Chrome.
+    ipcMain.on(CHANNEL_USER_SCRIPTS_STATE, (event: IpcMainEvent) => {
+      const id = event.sender.session === this.ses ? extensionIdOf(event.senderFrame?.url ?? '') : null
+      event.returnValue = id ? this.userScripts.allowed(id) : false
+    })
+
     ipcMain.on(CHANNEL_STORAGE, (event: IpcMainEvent, area: unknown, changes: unknown) => {
       if (event.sender.session !== this.ses || typeof area !== 'string' || !changes || typeof changes !== 'object') return
       const id = extensionIdOf(event.senderFrame?.url ?? '')
@@ -150,6 +172,11 @@ export class ExtensionCompat {
         wc.send(CHANNEL_SIDE_PANEL_EVENT, name, payload)
       }
     }
+  }
+
+  /** Start the extension's worker now (it registers its user scripts as it starts). */
+  start(id: string): void {
+    void this.wake(id)
   }
 
   /** Wake extensions known to listen for runtime.onStartup. */
@@ -196,6 +223,9 @@ export class ExtensionCompat {
     worker.ipc.handle(CHANNEL_CONTEXTS, (_event, filter: unknown) => this.contexts(id, filter))
     worker.ipc.handle(CHANNEL_SIDE_PANEL, (_event, method: unknown, arg: unknown) =>
       typeof method === 'string' ? this.sidePanel.call(id, method, arg) : undefined
+    )
+    worker.ipc.handle(CHANNEL_USER_SCRIPTS, (_event, method: unknown, ...args: unknown[]) =>
+      method === 'state' ? this.userScripts.allowed(id) : typeof method === 'string' ? this.userScripts.call(id, method, args) : undefined
     )
   }
 

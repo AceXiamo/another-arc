@@ -155,6 +155,45 @@ export interface ExtensionInfo {
   optionsUrl: string | null
   /** Its popup or side panel window is open. */
   windowOpen?: boolean
+  /** null when it does not ask for chrome.userScripts, else whether "Allow User Scripts" is on. */
+  userScripts: boolean | null
+  /** "Allow access to file URLs". */
+  fileAccess: boolean
+  /** chrome.commands and their keyboard shortcuts. */
+  commands: ExtensionCommand[]
+  /** Load error plus errors its worker logged this session. */
+  errorCount: number
+  /** Installed from the Chrome Web Store (updates come from there). */
+  fromStore: boolean
+}
+
+export interface ExtensionCommand {
+  name: string
+  description: string
+  /** Chrome's manifest syntax ("Command+Shift+Y"); '' when unset. */
+  shortcut: string
+  global: boolean
+}
+
+export interface ExtensionError {
+  message: string
+  /** Script URL, '' for a load error. */
+  source: string
+  line: number
+  /** Last time it happened (0 for a load error). */
+  at: number
+  /** Repeats of the same error in a row. */
+  count: number
+}
+
+/** What the extension details view loads on demand. */
+export interface ExtensionDetails {
+  /** Bytes on disk. */
+  size: number
+  storeUrl: string | null
+  /** The folder it was loaded from still exists ("Update from source" works). */
+  sourceExists: boolean
+  errors: ExtensionError[]
 }
 
 export type DownloadStatus = 'progressing' | 'completed' | 'cancelled' | 'interrupted'
@@ -305,3 +344,9 @@ export type ShellCommand =
   | { type: 'password.offerSave'; origin: string; username: string }
   /** The site controls lost focus (a press anywhere else): close them. */
   | { type: 'sitePanel.dismiss' }
+  /**
+   * A download started. `from`: where the pointer was (window coordinates),
+   * for the file to fly from there to the downloads button; null when it was
+   * not over the window (or the user was asked where to save).
+   */
+  | { type: 'download.started'; id: string; filename: string; mimeType?: string; from: { x: number; y: number } | null }

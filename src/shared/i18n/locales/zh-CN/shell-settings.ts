@@ -61,25 +61,7 @@ const zh: Record<keyof typeof en, string> = {
   'settings.permissions.windowManagement': '窗口管理',
   'settings.permissions.storageAccess': '第三方 Cookie',
   'settings.permissions.fileSystem': '文件编辑',
-  'settings.permissions.openExternal': '打开外部应用',
-
-  // Extensions page
-  'extensions.page.load': '加载已解压的扩展',
-  'extensions.page.intro':
-    '选择包含 manifest.json 的文件夹。扩展会被复制到浏览器数据目录中管理，原文件夹之后可用于“从源目录更新”。 支持情况以兼容性报告为准：“加载成功”不等于所有功能可用。',
-  'extensions.page.empty': '还没有安装扩展',
-
-  // Extension card
-  'extensions.card.enable': '启用',
-  'extensions.card.noPermissions': '未申请任何权限',
-  'extensions.card.broadAccess': '可读取并更改你访问的所有网站上的数据',
-  'extensions.card.showPermissions': '查看权限',
-  'extensions.card.hidePermissions': '隐藏权限',
-  'extensions.card.pin': '固定到工具栏',
-  'extensions.card.unpin': '从工具栏取消固定',
-  'extensions.card.options': '选项',
-  'extensions.card.update': '从源目录更新',
-  'extensions.card.remove': '卸载'
+  'settings.permissions.openExternal': '打开外部应用'
 }
 
 export default zh

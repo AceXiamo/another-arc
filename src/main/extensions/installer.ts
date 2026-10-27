@@ -1,8 +1,9 @@
 import { randomUUID } from 'node:crypto'
 import type { Dirent } from 'node:fs'
-import { lstat, mkdir, readdir, readFile, rename, rm, copyFile, stat } from 'node:fs/promises'
+import { lstat, mkdir, readdir, readFile, rename, rm, copyFile, stat, writeFile } from 'node:fs/promises'
 import { isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { LocalizedError } from '../app/i18n'
+import type { ManifestCommand } from './shortcuts'
 
 const MAX_FILES = 20_000
 const MAX_TOTAL_BYTES = 512 * 1024 * 1024
@@ -23,6 +24,8 @@ export interface ManifestSummary {
   hostPermissions: string[]
   optionsPage: string | null
   iconPath: string | null
+  /** chrome.commands, with macOS's suggested keys. */
+  commands: ManifestCommand[]
 }
 
 /** True when `child` is `parent` or lies inside it (after resolving `..`). */
@@ -116,6 +119,21 @@ export async function readManifest(dir: string): Promise<ManifestSummary> {
     .sort((a, b) => Math.abs(a - 48) - Math.abs(b - 48))[0]
   const iconRel = iconKey !== undefined ? icons[String(iconKey)] : null
   const iconPath = typeof iconRel === 'string' && isInside(dir, join(dir, iconRel)) ? join(dir, iconRel) : null
+  const commands: ManifestCommand[] = []
+  if (manifest.commands && typeof manifest.commands === 'object') {
+    for (const [name, raw] of Object.entries(manifest.commands as Record<string, unknown>)) {
+      const c = (raw ?? {}) as { description?: unknown; suggested_key?: unknown; global?: unknown }
+      const key = c.suggested_key
+      const suggested =
+        typeof key === 'string' ? key : key && typeof key === 'object' ? ((key as Record<string, unknown>).mac ?? (key as Record<string, unknown>).default) : ''
+      commands.push({
+        name,
+        description: await localizeMessage(dir, manifest, c.description),
+        suggested: typeof suggested === 'string' ? suggested.replace(/\s+/g, '') : '',
+        global: c.global === true
+      })
+    }
+  }
   return {
     name: await localizeMessage(dir, manifest, manifest.name),
     version: manifest.version,
@@ -125,8 +143,27 @@ export async function readManifest(dir: string): Promise<ManifestSummary> {
     permissions: permissions.filter((p) => !p.includes('://') && p !== '<all_urls>'),
     hostPermissions: [...new Set([...hostPermissions, ...contentMatches])],
     optionsPage: typeof options === 'string' ? options : null,
-    iconPath
+    iconPath,
+    commands
   }
+}
+
+/**
+ * chrome.userScripts is built on the extension's own chrome.scripting (see
+ * user-scripts.ts), which only exists with the "scripting" permission. An
+ * extension asking for "userScripts" alone gets it added to its installed
+ * copy (ours to change). Returns true when the manifest was rewritten.
+ */
+export async function ensureUserScriptsSupport(dir: string): Promise<boolean> {
+  const path = join(dir, 'manifest.json')
+  const manifest = await readJson(path)
+  const permissions = manifest?.permissions
+  if (!manifest || !Array.isArray(permissions) || !permissions.includes('userScripts') || permissions.includes('scripting')) {
+    return false
+  }
+  manifest.permissions = [...permissions, 'scripting']
+  await writeFile(path, JSON.stringify(manifest, null, 2))
+  return true
 }
 
 /**

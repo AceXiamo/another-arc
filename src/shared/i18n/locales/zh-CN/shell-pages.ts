@@ -13,6 +13,15 @@ const zh: Record<keyof typeof en, string> = {
   'history.clearSearch': '清除搜索',
 
   // Downloads page
+  'downloads.started': '正在下载“{name}”',
+  'downloads.openFolder': '打开文件夹',
+  'downloads.open': '打开',
+  'downloads.retry': '重试',
+  'downloads.today': '今天',
+  'downloads.yesterday': '昨天',
+  'downloads.earlier': '更早',
+  'downloads.left': '剩余 {time}',
+  'downloads.dragHint': '可以拖到访达或其他应用里',
   'downloads.clearCompleted': '清除已完成',
   'downloads.empty': '暂无下载',
   'downloads.emptyHint': '下载的文件会显示在这里。',
@@ -24,8 +33,6 @@ const zh: Record<keyof typeof en, string> = {
   'downloads.status.interrupted': '已中断',
   'downloads.status.paused': '已暂停 · {size}',
 
-  // Extensions page (the rest of its strings are in shell-settings)
-  'extensions.page.emptyHint': '从文件夹加载已解压的扩展即可开始使用。',
 
   // Empty space placeholder
   'status.empty.title': '{space} 里还没有标签页',

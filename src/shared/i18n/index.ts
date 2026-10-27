@@ -7,6 +7,7 @@
 // Placeholders use `{name}` and are filled by `translate`.
 import enAgent from './locales/en/agent'
 import enCommon from './locales/en/common'
+import enExtensions from './locales/en/extensions'
 import enExtImport from './locales/en/ext-import'
 import enTheme from './locales/en/theme'
 import enMain from './locales/en/main'
@@ -17,6 +18,7 @@ import enShellSettings from './locales/en/shell-settings'
 import enShellSidebar from './locales/en/shell-sidebar'
 import zhAgent from './locales/zh-CN/agent'
 import zhCommon from './locales/zh-CN/common'
+import zhExtensions from './locales/zh-CN/extensions'
 import zhExtImport from './locales/zh-CN/ext-import'
 import zhTheme from './locales/zh-CN/theme'
 import zhMain from './locales/zh-CN/main'
@@ -42,6 +44,7 @@ const en = {
   ...enShellPalette,
   ...enShellSettings,
   ...enShellPages,
+  ...enExtensions,
   ...enExtImport,
   ...enPasswords,
   ...enTheme,
@@ -60,6 +63,7 @@ const zhCN: Messages = {
   ...zhShellPalette,
   ...zhShellSettings,
   ...zhShellPages,
+  ...zhExtensions,
   ...zhExtImport,
   ...zhPasswords,
   ...zhTheme,

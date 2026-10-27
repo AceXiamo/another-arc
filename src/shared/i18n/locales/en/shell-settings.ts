@@ -1,5 +1,5 @@
 // Strings for the "shell-settings" module (Settings and Extensions pages).
-// Keys: 'settings.<section>.<name>' and 'extensions.<area>.<name>'.
+// Keys: 'settings.<section>.<name>'.
 export default {
   // Search
   'settings.search.title': 'Search',
@@ -64,23 +64,5 @@ export default {
   'settings.permissions.windowManagement': 'Window management',
   'settings.permissions.storageAccess': 'Third-party cookies',
   'settings.permissions.fileSystem': 'File editing',
-  'settings.permissions.openExternal': 'Open external apps',
-
-  // Extensions page
-  'extensions.page.load': 'Load unpacked extension',
-  'extensions.page.intro':
-    'Choose a folder that contains manifest.json. The extension is copied into the browser’s data folder; use “Update from source” later to pick up changes from the original folder. Check the compatibility report for what’s supported: “Loaded” doesn’t mean every feature works.',
-  'extensions.page.empty': 'No extensions installed yet',
-
-  // Extension card
-  'extensions.card.enable': 'Enable',
-  'extensions.card.noPermissions': 'No permissions requested',
-  'extensions.card.broadAccess': 'Can read and change all your data on all websites you visit',
-  'extensions.card.showPermissions': 'Show permissions',
-  'extensions.card.hidePermissions': 'Hide permissions',
-  'extensions.card.pin': 'Pin to toolbar',
-  'extensions.card.unpin': 'Unpin from toolbar',
-  'extensions.card.options': 'Options',
-  'extensions.card.update': 'Update from source',
-  'extensions.card.remove': 'Remove'
+  'settings.permissions.openExternal': 'Open external apps'
 } satisfies Record<string, string>

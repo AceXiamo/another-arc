@@ -455,6 +455,21 @@ export function registerHandlers(router: RpcRouter, b: Browser): void {
     }
   })
   router.handle('extensions.openOptions', tuple(extId), (_c, extensionId) => b.extensions.openOptions(extensionId))
+  router.handle('extensions.reload', tuple(extId), (_c, extensionId) => b.extensions.reload(extensionId))
+  router.handle('extensions.setUserScripts', tuple(extId, v.boolean()), (_c, extensionId, allowed) =>
+    b.extensions.setUserScriptsAllowed(extensionId, allowed)
+  )
+  router.handle('extensions.setFileAccess', tuple(extId, v.boolean()), (_c, extensionId, allowed) =>
+    b.extensions.setFileAccess(extensionId, allowed)
+  )
+  router.handle('extensions.setShortcut', tuple(extId, v.string({ min: 1, max: 128 }), v.string({ max: 64 })), (_c, extensionId, command, shortcut) =>
+    b.extensions.setShortcut(extensionId, command, shortcut)
+  )
+  router.handle('downloads.flightLayer', tuple(v.boolean()), (_c, visible) => b.setFlightLayerVisible(visible))
+  router.handle('extensions.recordShortcut', tuple(v.boolean()), (_c, recording) => b.setShortcutRecording(recording))
+  router.handle('extensions.details', tuple(extId), (_c, extensionId) => b.extensions.details(extensionId))
+  router.handle('extensions.clearErrors', tuple(extId), (_c, extensionId) => b.extensions.clearErrors(extensionId))
+  router.handle('extensions.reveal', tuple(extId), (_c, extensionId) => b.extensions.reveal(extensionId))
   router.handle('extensions.contextMenu', tuple(extId, point), (_c, extensionId, at) => {
     const ext = b.extensions.info().find((e) => e.id === extensionId)
     if (!ext) return
@@ -540,6 +555,9 @@ export function registerHandlers(router: RpcRouter, b: Browser): void {
   router.handle('downloads.resume', tuple(id), (_c, d) => dl.resume(d))
   router.handle('downloads.remove', tuple(id), (_c, d) => dl.remove(d))
   router.handle('downloads.clear', tuple(), () => dl.clearFinished())
+  router.handle('downloads.retry', tuple(id), (_c, d) => dl.retry(d, b.profiles.defaultSession()))
+  router.handle('downloads.drag', tuple(id), (c, d) => dl.drag(d, c.sender))
+  router.handle('downloads.openFolder', tuple(), () => dl.openFolder())
 
   // -- find / zoom / devtools ---------------------------------------------------
   router.handle('find.update', tuple(id, v.string({ max: 1000 }), v.boolean(), v.boolean()), (_c, tabId, text, forward, next) =>

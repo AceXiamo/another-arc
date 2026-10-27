@@ -1,6 +1,7 @@
 import { LAYOUT } from '@shared/layout'
 import { Toasts } from './components/Toasts'
 import { AgentRing } from './features/agent/AgentRing'
+import { DownloadFlights } from './features/downloads/DownloadFlights'
 import { FindSurface } from './features/find/FindSurface'
 import { ContentArea } from './features/pages/ContentArea'
 import { CommandPalette } from './features/palette/CommandPalette'
@@ -55,6 +56,7 @@ export function App() {
       <SavePasswordPrompt />
       <Toasts />
       <DragGhost />
+      <DownloadFlights />
     </div>
   )
 }

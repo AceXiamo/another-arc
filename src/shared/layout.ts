@@ -100,3 +100,10 @@ export function surfaceBounds(id: SurfaceId, card: Rect): Rect {
 
 /** window.open() frame name prefix used by the shell to create a surface. */
 export const SURFACE_FRAME_PREFIX = 'arc-surface:'
+
+/**
+ * window.open() frame name of the flight layer: a transparent window over
+ * the browser window that lets every click through, where a download flies
+ * from the pointer to the downloads button.
+ */
+export const FLIGHT_FRAME = 'arc-flight'

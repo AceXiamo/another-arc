@@ -15,6 +15,7 @@ BaseWindow (hiddenInset 标题栏，红绿灯在侧边栏左上)
   - 测试注意：Playwright 给它连上的每个页面都开 `Emulation.setFocusEmulationEnabled`，Chromium 把这算作一个"可见的捕获者"，所以在 `_electron.launch` 下所有页面永远是 visible、每秒 60 帧，连整个窗口隐藏都一样。节流相关的断言放在 `tests/e2e/background-tabs.spec.ts`：它自己启动应用，经 Node inspector 驱动 main，不让 Playwright 连页面。
 - **模态浮层不新增进程**：命令面板打开时把 shell 视图调到最上层（`setOverlay(true)`）。shell 的内容区是透明"镂空卡片"（`ContentArea` 用超大 `box-shadow` 画出卡片外的窗口底色，卡片内透明），所以页面在下方依然可见；关闭时页面视图回到上层。
 - **非模态浮层共用 shell 进程**：查找栏需要在页面可交互时浮在上面。shell 调用 `window.open('about:blank', 'arc-surface:find')`，main 在 `setWindowOpenHandler` 的 `createWindow` 中把该 guest WebContents 包进一个透明 WebContentsView。opener 同源，Chromium 保证二者同进程（实测 pid 相同），React 直接 portal 渲染进子文档，状态共享 Zustand store，零 IPC。
+- **下载的飞行动画**要从页面上的指针飞到侧边栏的下载按钮，跨过页面视图，又不能挡住点击，而视图做不到点击穿透。所以这一层是 shell 用 `window.open('about:blank', 'arc-flight')` 打开、main 包进一个透明子窗口（`setIgnoreMouseEvents(true)`、不可聚焦）的文档，同样与 shell 同进程。只在有东西在飞时显示、盖住窗口内容区。起点是下载开始时的光标位置（`screen.getCursorScreenPoint()`，不在窗口上或弹了保存框就不飞，只让按钮弹一下）；路径是匀速走的二次贝塞尔曲线，也就是抛物线，只动 transform 和 opacity。
 - **布局在 main 里算**：卡片位置由 `src/shared/layout.ts` 的纯函数从窗口尺寸 + 侧边栏宽度算出。窗口 resize 时 main 同步设置页面视图 bounds，不等待 renderer 测量回传，侧边栏与页面始终同帧对齐。
 
 ## 状态与数据流
@@ -125,6 +126,16 @@ BaseWindow (hiddenInset 标题栏，红绿灯在侧边栏左上)
   - `browser`：Chromium 152 的原生 `browser` 对象上没有扩展库补的 API；webextension-polyfill 会优先用它。兼容层把它指向完整的 `chrome`。
   - 离屏文档没有 context isolation，兼容层在这种情况下直接在同一个 world 里安装。
   - 扩展 SW 不用 session 的 UA；加载扩展时把 `app.userAgentFallback` 设为同一个 Chrome UA。
+  - `permissions.contains`：扩展库把申请的 origin 和 host_permissions 当字符串比较，`<all_urls>` 不"包含" `http://127.0.0.1:8080/`，Tampermonkey 因此去申请已有的权限、装脚本失败。改为按匹配模式判断（`match-pattern.ts`），已有的权限 `request` 直接返回 true，授予后派发 `permissions.onAdded`。
+  - `chrome.commands`：库只列出命令，不绑定、也不派发 `onCommand`。`shortcuts.ts` 按 Chrome 的语法（`Command+Shift+Y`、`MacCtrl+…`）绑定 manifest 建议的快捷键和用户改过的（存在设置表），在每个页面和外壳的 `before-input-event` 里、浏览器保留快捷键之后匹配；`_execute_action` / `_execute_side_panel` 走工具栏点击 / 侧边面板，其余派发 `commands.onCommand`（先唤醒 SW）。`commands.getAll` 的结果同步写回库的列表。
+- **`chrome.userScripts`**（`src/main/extensions/user-scripts.ts`、`src/shared/user-script-world.ts`、`src/preload/user-script-world.ts`）：Electron 没有这个 API，Tampermonkey 这类脚本管理器离不开它。
+  - 「允许用户脚本」开关（扩展详情页，存在设置表）：关着时 `chrome.userScripts` 不存在——管理器正是靠这一点提示用户去打开。切换时整个扩展重新加载，加载前先等旧 SW 停下：旧 SW 还在时新加载的扩展，其 SW 永远不是 active 的那个，所有 API 调用报 "No SW"。
+  - 页面里同步问 main 开关状态；SW 不能同步问（main 那边 handler 还没挂上时同步 IPC 会让 worker 卡死），所以 SW 里是 getter，异步拿到状态后才出现。
+  - **注入走原生**：每个用户脚本注册成扩展自己的 `chrome.scripting` 动态 content script（id 带 `arc-us-` 前缀，从扩展自己的 `chrome.scripting` 里隐藏），Chromium 负责 document_start、所有 frame，每次页面加载不走 IPC。`{ code }` 写成安装副本里的 `arc_user_scripts/<hash>.js`（副本是我们的；代码另存一份在 `User Scripts/` 下，更新扩展后可以重写）；`includeGlobs` / `excludeGlobs` 由文件开头的 URL 判断实现。没有 `scripting` 权限的扩展，安装时给副本的 manifest 补上。
+  - **USER_SCRIPT world**：Chrome 里它有自己的 CSP（`configureWorld`），Tampermonkey 默认模式会打开 `unsafe-eval` / `unsafe-inline`，用 eval 和内联 `<script>` 跑脚本；Electron 只能注册到扩展的 isolated world，MV3 的 CSP 两样都禁。所以原生 content script 只负责时机和 frame：文件里是一座桥，document_start 时（页面脚本还没运行）在 DOM 上用随机频道名向页面 preload 打招呼，之后把代码交给 preload，preload 在自己创建的 world 里**同步**执行（创建 world 前先设好 CSP，Blink 按文档缓存 world 的 CSP，事后改无效）。这个 world 的 `chrome.runtime.sendMessage / connect` 经桥用 isolated world 的原生 `chrome.runtime` 发出，sender 信息都是对的。world 的 origin 是页面的，所以伪造的桥拿不到任何额外能力。页面 preload 只在主 frame 运行：子 frame 里桥无人应答，脚本退回在 isolated world 里执行（除 eval 和内联脚本外都能用）。
+  - 消息路由：从 isolated world 发出的消息原生到 `onMessage` / `onConnect`；兼容层把网页来的消息同时交给 `onUserScriptMessage` / `onUserScriptConnect` 的监听者，同一个函数只调一次（Tampermonkey 把同一个监听同时挂在两边）。
+  - Electron 退出后不保留动态 content script：扩展每次启动都把 main 记录的注册表同步回去（按描述比较增删改）；启动时第一个页面最多等 1.5 秒，直到这些扩展的 SW 同步完，和 content script 一样在页面加载前就位。
+- **扩展页**：列表（一行一个，点进详情；需要处理的事——等着开启用户脚本、有错误——在列表上方提示）和详情 `browser://extensions?id=<id>`（访问权限、快捷键录制、可读的权限说明、SW 报的错误、来源与占用空间）。录快捷键时 main 暂停浏览器和扩展快捷键，⌘ 组合键才能录进来。SW 的错误来自 `serviceWorkers` 的 `console-message`；被重载淘汰的 worker（报 "No SW" 的）打出的错误不算。
 - **扩展窗口**（`src/main/extensions/extension-window.ts`）：在扩展库创建 PopupView 之前接管工具栏点击（运行时替换 `BrowserActionAPI.activateClick`），Popup 和侧边面板都在一个带标准标题栏的子窗口里打开：可拖动、失焦不关闭、每个扩展一个、记住位置。再点一次按钮关闭。没有 Popup 也没有面板时仍派发 `action.onClicked`（必要时先唤醒 SW）。
 - **Popup 尺寸**（`src/main/extensions/popup-fit.ts`）：Electron 44 不触发 `preferred-size-changed`。改为按 Chrome 的规则自行测量：内容最小不溢出宽度，以及该宽度下的高度；窗口在测量完之后才显示，之后只增大不缩小，用户手动调整过就不再跟随。
 - 详细的兼容性数据见 `docs/PHASE0-REPORT.md`。

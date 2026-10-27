@@ -12,6 +12,8 @@ import {
 import './page-prompt'
 // chrome.webstorePrivate on the Chrome Web Store, so its install button works.
 import './web-store'
+// The USER_SCRIPT world of chrome.userScripts (Tampermonkey & co).
+import './user-script-world'
 
 // Runs in every page, so it does as close to nothing as possible until a
 // sign-in field is touched: a handful of capturing listeners, no polling, no

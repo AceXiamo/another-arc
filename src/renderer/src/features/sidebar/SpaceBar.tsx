@@ -1,11 +1,11 @@
 import { memo } from 'react'
-import { Icon } from '../../components/Icon'
 import { SpaceIcon } from '../../components/SpaceIcon'
 import { useT } from '../../lib/i18n'
 import { send } from '../../lib/rpc'
 import { titleBar } from '../../lib/title-bar'
 import { useBrowser } from '../../stores/browser'
 import { useUi } from '../../stores/ui'
+import { DownloadsButton } from '../downloads/DownloadsButton'
 import { IconButton } from './SidebarHeader'
 
 const SpaceButton = memo(function SpaceButton({ id }: { id: string }) {
@@ -36,31 +36,6 @@ const SpaceButton = memo(function SpaceButton({ id }: { id: string }) {
     </button>
   )
 })
-
-function DownloadsButton() {
-  const t = useT()
-  const active = useBrowser((s) => {
-    let n = 0
-    for (const d of Object.values(s.downloads)) if (d.status === 'progressing') n++
-    return n
-  })
-  const hasAny = useBrowser((s) => Object.keys(s.downloads).length > 0)
-  if (!hasAny) return null
-  return (
-    <button
-      title={t('sidebar.spaceBar.downloads')}
-      onClick={() => send('tabs.openInternal', 'downloads')}
-      className="relative grid h-7 w-7 shrink-0 place-items-center rounded-[7px] text-[var(--ink)] hover:bg-[var(--sb-hover)] hover:text-[var(--ink-strong)]"
-    >
-      <Icon name="download" size={16} />
-      {active > 0 && (
-        <span className="absolute -right-0.5 -top-0.5 grid h-3.5 min-w-3.5 place-items-center rounded-full bg-[var(--accent-fill)] px-[3px] text-[9px] font-semibold leading-none text-white">
-          {active}
-        </span>
-      )}
-    </button>
-  )
-}
 
 export function SpaceBar() {
   const t = useT()

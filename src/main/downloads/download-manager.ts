@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { existsSync } from 'node:fs'
 import { basename, extname, join } from 'node:path'
-import { app, shell, type DownloadItem, type Session } from 'electron'
+import { app, shell, type DownloadItem, type Session, type WebContents } from 'electron'
 import type { DownloadState, DownloadStatus } from '@shared/types'
 import type { Database } from '../persistence/database'
 import type { SettingsService } from '../settings/settings-service'
@@ -29,6 +29,7 @@ export class DownloadManager {
   private readonly lastProgress = new Map<string, number>()
   private readonly attached = new WeakSet<Session>()
   private onProgress: ((fraction: number) => void) | null = null
+  private onStart: ((state: DownloadState, asked: boolean) => void) | null = null
 
   constructor(
     private readonly db: Database,
@@ -55,6 +56,11 @@ export class DownloadManager {
 
   setProgressListener(fn: (fraction: number) => void): void {
     this.onProgress = fn
+  }
+
+  /** A download began; `asked`: a save dialog came first. */
+  setStartListener(fn: (state: DownloadState, asked: boolean) => void): void {
+    this.onStart = fn
   }
 
   attach(session: Session): void {
@@ -108,11 +114,33 @@ export class DownloadManager {
     for (const [id, s] of this.states) if (s.status !== 'progressing') this.remove(id)
   }
 
+  /** Start a failed or canceled download over; it replaces the old entry. */
+  retry(id: string, session: Session): void {
+    const s = this.states.get(id)
+    if (!s || s.status === 'progressing' || s.status === 'completed' || !/^https?:/.test(s.url)) return
+    this.remove(id)
+    session.downloadURL(s.url)
+  }
+
+  /** The user drags a finished file out of the downloads list. */
+  async drag(id: string, sender: WebContents): Promise<void> {
+    const s = this.states.get(id)
+    if (s?.status !== 'completed' || !existsSync(s.savePath)) return
+    const icon = await app.getFileIcon(s.savePath, { size: 'normal' }).catch(() => null)
+    if (!icon || icon.isEmpty() || sender.isDestroyed()) return
+    sender.startDrag({ file: s.savePath, icon })
+  }
+
+  openFolder(): void {
+    void shell.openPath(this.settings.get().downloadDir || app.getPath('downloads'))
+  }
+
   private track(item: DownloadItem): void {
     const id = randomUUID()
     const dir = this.settings.get().downloadDir || app.getPath('downloads')
     const filename = item.getFilename() || 'download'
-    if (this.settings.get().downloadAskWhere) {
+    const asked = this.settings.get().downloadAskWhere
+    if (asked) {
       item.setSaveDialogOptions({ defaultPath: join(dir, filename) })
     } else {
       const target = this.uniquePath(dir, filename)
@@ -138,6 +166,7 @@ export class DownloadManager {
     this.shellSync.download(id, state, true)
     this.persist(state)
     this.refreshDock()
+    this.onStart?.(state, asked)
 
     item.on('updated', (_e, s) => {
       const now = Date.now()

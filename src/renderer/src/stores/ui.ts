@@ -35,6 +35,15 @@ export interface Toast {
   message: string
 }
 
+/** A download that just started, on its way to the downloads button. */
+export interface DownloadFlight {
+  id: string
+  filename: string
+  mimeType?: string
+  /** Pointer position (window coordinates); null: no flight, the button only reacts. */
+  from: { x: number; y: number } | null
+}
+
 interface UiState {
   palette: PaletteMode | null
   findOpen: boolean
@@ -58,6 +67,9 @@ interface UiState {
   passwordPrompt: { origin: string; username: string } | null
   /** Site controls popover, hanging from the address pill button at this point (window coordinates). */
   sitePanel: { x: number; y: number } | null
+  flights: DownloadFlight[]
+  /** Bumped when a download lands on the downloads button, which then reacts. */
+  downloadLanded: number
 }
 
 export const useUi = create<UiState>()(() => ({
@@ -71,7 +83,9 @@ export const useUi = create<UiState>()(() => ({
   toasts: [],
   autofill: null,
   passwordPrompt: null,
-  sitePanel: null
+  sitePanel: null,
+  flights: [],
+  downloadLanded: 0
 }))
 
 let toastSeq = 0

@@ -1,13 +1,16 @@
-import { Icon } from '../../components/Icon'
+import { Icon, type IconName } from '../../components/Icon'
 import { Illustration, type IllustrationName } from '../../components/Illustration'
 
 export function PageLayout({
   title,
+  icon,
   actions,
   back,
   children
 }: {
   title: string
+  /** Shown before the title (an extension's icon). */
+  icon?: React.ReactNode
   actions?: React.ReactNode
   /** A page reached from another one: a link back to it above the title. */
   back?: { label: string; onClick: () => void }
@@ -27,7 +30,8 @@ export function PageLayout({
           </button>
         )}
         <header className="flex min-h-8 items-center gap-3">
-          <h1 className="flex-1 text-[24px] font-semibold leading-tight tracking-[-0.01em]">{title}</h1>
+          {icon}
+          <h1 className="min-w-0 flex-1 truncate text-[24px] font-semibold leading-tight tracking-[-0.01em]">{title}</h1>
           {actions}
         </header>
         {children}
@@ -36,12 +40,26 @@ export function PageLayout({
   )
 }
 
-export function Section({ title, children, description }: { title: string; description?: string; children: React.ReactNode }) {
+export function Section({
+  title,
+  children,
+  description,
+  action
+}: {
+  title: string
+  description?: string
+  /** A small control at the end of the title line. */
+  action?: React.ReactNode
+  children: React.ReactNode
+}) {
   return (
     <section className="flex flex-col gap-2">
-      <div className="px-1">
-        <h2 className="text-[12px] font-semibold text-[var(--text-2)]">{title}</h2>
-        {description && <p className="mt-0.5 text-[12px] leading-relaxed text-[var(--text-3)]">{description}</p>}
+      <div className="flex items-end gap-2 px-1">
+        <div className="min-w-0 flex-1">
+          <h2 className="text-[12px] font-semibold text-[var(--text-2)]">{title}</h2>
+          {description && <p className="mt-0.5 text-[12px] leading-relaxed text-[var(--text-3)]">{description}</p>}
+        </div>
+        {action}
       </div>
       <div className="flex flex-col rounded-[12px] bg-[var(--surface-2)] shadow-[var(--card-shadow)] [&>*+*]:shadow-[inset_0_0.5px_0_var(--line)]">
         {children}
@@ -143,6 +161,18 @@ export function SmallButton({
           : 'text-[var(--text-2)] hover:bg-[var(--hover)] hover:text-[var(--text)] active:bg-[var(--press)]'
       }`}
     >
+      {children}
+    </button>
+  )
+}
+
+export function SecondaryButton({ icon, children, onClick }: { icon?: IconName; children: React.ReactNode; onClick: () => void }) {
+  return (
+    <button
+      onClick={onClick}
+      className="flex h-[30px] shrink-0 items-center gap-1.5 rounded-[8px] bg-[var(--surface-2)] px-3 text-[12.5px] font-medium text-[var(--text)] shadow-[var(--card-shadow)] transition-[scale,background-color] duration-150 ease-out hover:bg-[var(--surface-3)] active:scale-[0.96]"
+    >
+      {icon && <Icon name={icon} size={14} strokeWidth={1.8} />}
       {children}
     </button>
   )

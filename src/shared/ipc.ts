@@ -168,6 +168,18 @@ export interface ShellRpc {
   'extensions.uninstall': (id: string) => void
   'extensions.update': (id: string) => void
   'extensions.openOptions': (id: string) => void
+  'extensions.reload': (id: string) => void
+  'extensions.setUserScripts': (id: string, allowed: boolean) => void
+  'extensions.setFileAccess': (id: string, allowed: boolean) => void
+  /** 'reserved': one of the browser's own shortcuts. */
+  'extensions.setShortcut': (id: string, command: string, shortcut: string) => 'ok' | 'invalid' | 'reserved'
+  /** The page records a shortcut: browser and extension shortcuts stand down meanwhile. */
+  'extensions.recordShortcut': (recording: boolean) => void
+  /** Show or hide the click-through layer the download flights are drawn in. */
+  'downloads.flightLayer': (visible: boolean) => void
+  'extensions.details': (id: string) => import('./types').ExtensionDetails | null
+  'extensions.clearErrors': (id: string) => void
+  'extensions.reveal': (id: string) => void
   'extensions.contextMenu': (id: string, at: Point) => void
   /** Browsers whose last-used profile has extensions to import. Read-only scan. */
   'extensions.importSources': () => import('./ext-import').ImportSourceSummary[]
@@ -214,6 +226,11 @@ export interface ShellRpc {
   'downloads.resume': (id: string) => void
   'downloads.remove': (id: string) => void
   'downloads.clear': () => void
+  /** Download it again (a failed or canceled one); the old entry goes. */
+  'downloads.retry': (id: string) => void
+  /** Drag a finished file out of the list (to Finder, another app). */
+  'downloads.drag': (id: string) => void
+  'downloads.openFolder': () => void
 
   'find.update': (tabId: TabId, text: string, forward: boolean, findNext: boolean) => void
   'find.stop': (tabId: TabId) => void
