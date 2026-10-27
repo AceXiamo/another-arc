@@ -4,6 +4,8 @@ import type { Database } from '../persistence/database'
 const MAX_BYTES = 256 * 1024
 const MEMORY_ENTRIES = 300
 const FETCH_TIMEOUT_MS = 8000
+/** A failed download is not retried for this long (missing `/favicon.ico`s). */
+const RETRY_AFTER_MS = 10 * 60_000
 
 export interface Icon {
   mime: string
@@ -20,6 +22,7 @@ export class FaviconCache {
   private readonly memory = new Map<string, Icon>()
   private readonly known = new Set<string>()
   private readonly inflight = new Map<string, Promise<boolean>>()
+  private readonly failedAt = new Map<string, number>()
 
   constructor(private readonly db: Database) {
     for (const row of db.all<{ url: string }>('SELECT url FROM favicons')) this.known.add(row.url)
@@ -32,6 +35,7 @@ export class FaviconCache {
   /** Ensure `url` is cached. Resolves true if the icon is available. */
   ensure(url: string, session: Session): Promise<boolean> {
     if (this.known.has(url)) return Promise.resolve(true)
+    if (Date.now() - (this.failedAt.get(url) ?? -Infinity) < RETRY_AFTER_MS) return Promise.resolve(false)
     let pending = this.inflight.get(url)
     if (!pending) {
       pending = this.download(url, session).finally(() => this.inflight.delete(url))
@@ -78,7 +82,11 @@ export class FaviconCache {
     } catch {
       icon = null
     }
-    if (!icon) return false
+    if (!icon) {
+      this.failedAt.set(url, Date.now())
+      return false
+    }
+    this.failedAt.delete(url)
     this.store(url, icon)
     return true
   }
@@ -99,7 +107,9 @@ export class FaviconCache {
   /** Drop icons no tab or history entry references and that are older than a month. */
   prune(): void {
     this.db.run(
-      `DELETE FROM favicons WHERE updated_at < ? AND url NOT IN (SELECT favicon FROM tabs WHERE favicon IS NOT NULL)`,
+      `DELETE FROM favicons WHERE updated_at < ?
+         AND url NOT IN (SELECT favicon FROM tabs WHERE favicon IS NOT NULL)
+         AND url NOT IN (SELECT favicon FROM history_urls WHERE favicon IS NOT NULL)`,
       Date.now() - 30 * 86_400_000
     )
   }

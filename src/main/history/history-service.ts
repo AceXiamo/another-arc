@@ -11,11 +11,12 @@ interface PendingVisit {
 
 const FLUSH_DELAY_MS = 1000
 
-/** Buffers visits/titles and writes them in one transaction per second. */
+/** Buffers visits, titles and icons and writes them in one transaction per second. */
 export class HistoryService {
   readonly store: HistoryStore
   private visits: PendingVisit[] = []
   private readonly titles = new Map<string, string>()
+  private readonly favicons = new Map<string, string>()
   private timer: NodeJS.Timeout | null = null
 
   constructor(private readonly db: Database) {
@@ -31,6 +32,14 @@ export class HistoryService {
   updateTitle(url: string, title: string): void {
     if (!title || !isRecordableUrl(url)) return
     this.titles.set(url, title)
+    this.schedule()
+  }
+
+  /** `favicon` is a key into the favicon cache, already stored there. */
+  updateFavicon(url: string, favicon: string): void {
+    // Data URLs are cached too, but are too big to copy into every page row.
+    if (favicon.startsWith('data:') || !isRecordableUrl(url)) return
+    this.favicons.set(url, favicon)
     this.schedule()
   }
 
@@ -52,6 +61,7 @@ export class HistoryService {
   clear(): void {
     this.visits = []
     this.titles.clear()
+    this.favicons.clear()
     this.store.clear()
   }
 
@@ -60,14 +70,16 @@ export class HistoryService {
       clearTimeout(this.timer)
       this.timer = null
     }
-    if (this.visits.length === 0 && this.titles.size === 0) return
+    if (this.visits.length === 0 && this.titles.size === 0 && this.favicons.size === 0) return
     const visits = this.visits
     this.visits = []
     this.db.transaction(() => {
       for (const v of visits) this.store.recordVisit(v.url, v.title, v.typed, v.at)
       for (const [url, title] of this.titles) this.store.updateTitle(url, title)
+      for (const [url, favicon] of this.favicons) this.store.updateFavicon(url, favicon)
     })
     this.titles.clear()
+    this.favicons.clear()
   }
 
   private schedule(): void {

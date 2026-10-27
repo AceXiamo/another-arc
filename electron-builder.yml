@@ -33,7 +33,9 @@ mac:
       arch: [arm64]
   icon: resources/icon.png
   category: public.app-category.productivity
-  # No Developer ID available: ad-hoc signature (required on Apple Silicon).
+  # Ad-hoc signature by default (required on Apple Silicon). `pnpm dist`
+  # (scripts/dist.mjs) overrides it with a keychain certificate when one
+  # exists, so the app keeps one identity across builds.
   identity: '-'
   hardenedRuntime: false
   darkModeSupport: true

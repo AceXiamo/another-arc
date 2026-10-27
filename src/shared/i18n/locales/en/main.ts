@@ -14,6 +14,7 @@ export default {
   'menu.reopenTab': 'Reopen Closed Tab',
   'menu.openLocation': 'Open Location…',
   'menu.importBrowser': 'Import from Browser…',
+  'menu.print': 'Print…',
   'menu.closeTab': 'Close Tab',
   'menu.closeWindow': 'Close Window',
   'menu.edit': 'Edit',
@@ -111,9 +112,23 @@ export default {
   'spaceMenu.delete': 'Delete Space…',
 
   'extMenu.options': 'Options',
-  'extMenu.pin': 'Pin to Toolbar',
-  'extMenu.unpin': 'Unpin from Toolbar',
+  'extMenu.pin': 'Pin to Address Bar',
+  'extMenu.unpin': 'Unpin from Address Bar',
   'extMenu.manage': 'Manage Extensions',
+
+  'webStore.confirm.title': 'Add “{name}”?',
+  'webStore.confirm.add': 'Add Extension',
+  'webStore.confirm.allSites': 'It can read and change your data on all websites.',
+  'webStore.confirm.someSites': 'It can read and change your data on {sites}.',
+  'webStore.confirm.apis': 'It uses: {apis}',
+  'webStore.confirm.noPermissions': 'It needs no special permissions.',
+  'webStore.installed': '“{name}” added',
+  'webStore.installFailed': 'Couldn’t add “{name}”: {error}',
+
+  'siteMenu.copyUrl': 'Copy URL',
+  'siteMenu.print': 'Print…',
+  'siteMenu.devtools': 'Developer Tools',
+  'siteMenu.siteSettings': 'Site Settings…',
 
   'dialog.deleteSpace.title': 'Delete space “{name}”?',
   'dialog.deleteSpace.detail': 'Its {count} tabs will be closed.',

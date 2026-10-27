@@ -10,6 +10,13 @@ const zh: Record<keyof typeof en, string> = {
   'settings.search.customUrlHint': '用 %s 代表搜索词，例如 https://example.com/search?q=%s',
 
   // Appearance
+  'settings.general.title': '通用',
+  'settings.defaultBrowser.label': '默认浏览器',
+  'settings.defaultBrowser.isDefault': '其他应用里的链接会在 Another Arc 中打开。',
+  'settings.defaultBrowser.notDefault': '其他应用里的链接目前会用别的浏览器打开。',
+  'settings.defaultBrowser.make': '设为默认',
+  'settings.defaultBrowser.done': '已是默认',
+
   'settings.appearance.title': '外观',
   'settings.appearance.language': '语言',
   'settings.appearance.theme': '主题',

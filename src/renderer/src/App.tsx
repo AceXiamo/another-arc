@@ -1,11 +1,15 @@
 import { LAYOUT } from '@shared/layout'
 import { Toasts } from './components/Toasts'
+import { AgentRing } from './features/agent/AgentRing'
 import { FindSurface } from './features/find/FindSurface'
 import { ContentArea } from './features/pages/ContentArea'
 import { CommandPalette } from './features/palette/CommandPalette'
+import { AutofillSurface } from './features/passwords/AutofillSurface'
+import { SavePasswordPrompt } from './features/passwords/SavePasswordPrompt'
 import { DragGhost } from './features/sidebar/DragGhost'
 import { PeekEdge } from './features/sidebar/PeekEdge'
 import { Sidebar } from './features/sidebar/Sidebar'
+import { SitePanel } from './features/sidebar/SitePanel'
 import { ChromeBackdrop } from './features/theme/ChromeBackdrop'
 import { titleBar } from './lib/title-bar'
 import { useBrowser } from './stores/browser'
@@ -30,6 +34,7 @@ export function App() {
       <div className="contents" style={CARD_CHROME_OFF}>
         <ContentArea left={cardLeft} />
       </div>
+      <AgentRing left={cardLeft} />
       {collapsed ? (
         <PeekEdge />
       ) : (
@@ -43,8 +48,11 @@ export function App() {
       )}
       {!collapsed && <Sidebar />}
       {collapsed && peek && <Sidebar floating />}
+      <SitePanel />
       {palette && <CommandPalette key={palette} mode={palette} cardLeft={cardLeft} />}
       <FindSurface />
+      <AutofillSurface />
+      <SavePasswordPrompt />
       <Toasts />
       <DragGhost />
     </div>

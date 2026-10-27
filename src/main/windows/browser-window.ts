@@ -8,6 +8,8 @@ export interface FloatingSurface {
   /** Bounds relative to the page card. */
   place(card: Rect): Rectangle
   visible: boolean
+  /** Stays above the shell even while the shell is raised over the page. */
+  topmost?: boolean
 }
 
 export interface BrowserWindowOptions {
@@ -158,6 +160,7 @@ export class BrowserWindowController {
     this.overlay = open
     if (open) {
       this.win.contentView.addChildView(this.shell)
+      this.raiseTopmost()
       this.shell.webContents.focus()
     } else {
       if (this.page) this.win.contentView.addChildView(this.page)
@@ -178,6 +181,12 @@ export class BrowserWindowController {
     else this.win.contentView.removeChildView(surface.view)
   }
 
+  /** Move a surface that is already showing, e.g. to another form field. */
+  repositionSurface(id: string): void {
+    const surface = this.surfaces.get(id)
+    if (surface?.visible && !this.destroyed) surface.view.setBounds(surface.place(this.cardBounds()))
+  }
+
   getSurface(id: string): FloatingSurface | undefined {
     return this.surfaces.get(id)
   }
@@ -185,14 +194,22 @@ export class BrowserWindowController {
   private attachSurface(surface: FloatingSurface): void {
     surface.view.setBounds(surface.place(this.cardBounds()))
     this.win.contentView.addChildView(surface.view)
-    if (this.overlay) this.win.contentView.addChildView(this.shell)
+    if (this.overlay && !surface.topmost) this.win.contentView.addChildView(this.shell)
+    this.raiseTopmost()
   }
 
   private raiseFloating(): void {
     for (const surface of this.surfaces.values()) {
-      if (surface.visible) this.win.contentView.addChildView(surface.view)
+      if (surface.visible && !surface.topmost) this.win.contentView.addChildView(surface.view)
     }
     if (this.overlay) this.win.contentView.addChildView(this.shell)
+    this.raiseTopmost()
+  }
+
+  private raiseTopmost(): void {
+    for (const surface of this.surfaces.values()) {
+      if (surface.visible && surface.topmost) this.win.contentView.addChildView(surface.view)
+    }
   }
 
   // -- title bar -------------------------------------------------------------

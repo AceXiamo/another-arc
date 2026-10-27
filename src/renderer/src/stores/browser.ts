@@ -3,7 +3,7 @@ import { DEFAULT_SETTINGS, DEFAULT_WINDOW_STATE } from '@shared/defaults'
 import { applyPatch, type ShellState } from '@shared/patch'
 import { isSavedTab } from '@shared/tabs'
 import type { MoveFolderOptions, MoveTabOptions } from '@shared/ipc'
-import type { FolderId, FolderState, SpaceId, SpaceState, StatePatch, TabId, TabState } from '@shared/types'
+import type { FolderId, FolderState, PageDialog, SpaceId, SpaceState, StatePatch, TabId, TabState } from '@shared/types'
 
 /** Mirror of main-process state. Mutated only by patches (and optimistic moves). */
 export const useBrowser = create<ShellState>()(() => ({
@@ -17,6 +17,7 @@ export const useBrowser = create<ShellState>()(() => ({
   extensionPartition: '',
   downloads: {},
   permissionPrompts: [],
+  pageDialogs: [],
   find: null,
   isDev: false
 }))
@@ -40,6 +41,12 @@ export const selectActiveTab = (s: ShellState): TabState | undefined => {
 
 export function getActiveTab(): TabState | undefined {
   return selectActiveTab(useBrowser.getState())
+}
+
+/** The alert / confirm / prompt the page on screen is waiting on, if any. */
+export const selectActiveDialog = (s: ShellState): PageDialog | null => {
+  const tab = selectActiveTab(s)
+  return (tab && s.pageDialogs.find((d) => d.tabId === tab.id)) ?? null
 }
 
 /**

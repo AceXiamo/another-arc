@@ -80,6 +80,9 @@
   --popover-line: rgb(0 0 0 / 0.08);
   --popover-shadow: 0 12px 36px rgb(0 0 0 / 0.16), 0 2px 6px rgb(0 0 0 / 0.06), 0 0 0 0.5px rgb(0 0 0 / 0.1);
   --card-shadow: 0 0 0 0.5px rgb(0 0 0 / 0.06);
+  /* Backing for site icons in lists: raised off the card, and light enough in
+     dark mode that dark logos (GitHub, Notion…) stay visible. */
+  --icon-tile: #ffffff;
 
   color-scheme: light;
   font-family:
@@ -135,6 +138,7 @@
   --popover-line: rgb(255 255 255 / 0.08);
   --popover-shadow: 0 12px 36px rgb(0 0 0 / 0.45), 0 2px 6px rgb(0 0 0 / 0.2), 0 0 0 0.5px rgb(255 255 255 / 0.1);
   --card-shadow: 0 0 0 0.5px rgb(255 255 255 / 0.05);
+  --icon-tile: color-mix(in oklch, var(--text) 18%, var(--surface-2));
   color-scheme: dark;
 }
 
@@ -200,6 +204,14 @@
   }
 }
 
+/* The quiet scrollbar's thumb colour, registered so it can fade: scrollbar
+   colours do not transition on their own. */
+@property --scroll-thumb {
+  syntax: '<color>';
+  inherits: false;
+  initial-value: transparent;
+}
+
 @layer components {
   /* Scrollbars that do not shift layout. */
   .scroll-y {
@@ -210,6 +222,25 @@
     overscroll-behavior: contain;
   }
 
+  /* Sidebar scrolling: no scrollbar at rest, whatever the system "Show scroll
+     bars" setting. It fades in while the list moves, or with the pointer at
+     its edge to grab it (lib/quiet-scrollbar.ts), and fades out after. The
+     gutter is kept, so showing it never shifts the rows. */
+  .scroll-y-quiet {
+    overflow-y: auto;
+    overflow-x: hidden;
+    overscroll-behavior: contain;
+    scrollbar-width: thin;
+    scrollbar-color: var(--scroll-thumb) transparent;
+    transition: --scroll-thumb 0.45s ease;
+  }
+
+  .scroll-y-quiet[data-scrolling],
+  .scroll-y-quiet[data-scroll-edge] {
+    --scroll-thumb: var(--ink-faint);
+    transition-duration: 0.1s;
+  }
+
   .spinner {
     width: 14px;
     height: 14px;
@@ -217,6 +248,84 @@
     border: 1.6px solid var(--ink-faint);
     border-top-color: var(--accent);
     animation: spin 0.7s linear infinite;
+  }
+
+  /*
+   * An agent is driving the tab: a rainbow frame around the page card (in
+   * the gutter; the page covers the inside) and a glow that breathes out to
+   * the window edge. The rainbow is a 96 px canvas scaled up and spun by the
+   * compositor; only transform and opacity animate, nothing repaints.
+   */
+  .agent-ring {
+    --w: 2px;
+  }
+
+  .agent-rainbow {
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    width: 150vmax;
+    height: 150vmax;
+    transform: translate(-50%, -50%);
+    animation: agent-spin 7s linear infinite;
+  }
+
+  .agent-ring-line {
+    position: absolute;
+    inset: calc(-1 * var(--w));
+    padding: var(--w);
+    border-radius: calc(var(--r) + var(--w));
+    overflow: hidden;
+    mask:
+      linear-gradient(#000 0 0) content-box exclude,
+      linear-gradient(#000 0 0);
+  }
+
+  /*
+   * Fades from the card edge to nothing at the window edge, and turns the
+   * other way, so the colors shimmer. The middle is cut out (a few px in,
+   * to fill the page's rounded corners): a page that is transparent or has
+   * not painted yet shows no rainbow through it.
+   */
+  .agent-ring-glow {
+    --hole: calc(var(--fade) + 4px);
+    position: absolute;
+    inset: calc(-1 * var(--fade));
+    overflow: hidden;
+    /* Each layer composites onto the ones below it: fade × (fade − hole). */
+    mask-image:
+      linear-gradient(to right, transparent, #000 var(--fade), #000 calc(100% - var(--fade)), transparent),
+      linear-gradient(to bottom, transparent, #000 var(--fade), #000 calc(100% - var(--fade)), transparent),
+      linear-gradient(#000 0 0);
+    mask-size:
+      100% 100%,
+      100% 100%,
+      calc(100% - 2 * var(--hole)) calc(100% - 2 * var(--hole));
+    mask-position: center;
+    mask-repeat: no-repeat;
+    mask-composite: intersect, subtract, add;
+    will-change: opacity;
+    animation: agent-breathe 2.4s ease-in-out infinite;
+  }
+
+  .agent-ring-glow > .agent-rainbow {
+    animation-duration: 11s;
+    animation-direction: reverse;
+  }
+
+  .agent-dot {
+    position: absolute;
+    right: -2px;
+    bottom: -2px;
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: rgb(40 182 246);
+    box-shadow:
+      0 0 0 1.5px var(--chrome),
+      0 0 5px rgb(40 182 246 / 0.8);
+    will-change: opacity;
+    animation: agent-breathe 1.8s ease-in-out infinite;
   }
 
   /* Text fields on neutral surfaces (settings, editor). */
@@ -419,6 +528,21 @@
   }
 }
 
+@keyframes agent-breathe {
+  50% {
+    opacity: 0.45;
+  }
+}
+
+@keyframes agent-spin {
+  from {
+    transform: translate(-50%, -50%) rotate(0turn);
+  }
+  to {
+    transform: translate(-50%, -50%) rotate(1turn);
+  }
+}
+
 .anim-fade {
   animation: fade-in 120ms ease-out;
 }
@@ -446,6 +570,12 @@
 
   .spinner {
     animation-duration: 1.6s;
+  }
+
+  .agent-rainbow,
+  .agent-ring-glow,
+  .agent-dot {
+    animation: none;
   }
 
   *,

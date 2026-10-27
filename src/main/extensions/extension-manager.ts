@@ -36,6 +36,7 @@ import { ExtensionWindows, type ExtensionSurface, type StoredPlacement } from '.
 import { installCopy, readManifest, removeCopy, replaceCopy, type ManifestSummary } from './installer'
 import { fitPopup } from './popup-fit'
 import { SidePanelState } from './side-panel'
+import { downloadFromWebStore, webStoreIdOf } from './web-store'
 import type { Rect } from './window-placement'
 
 type ExtensionsLib = typeof import('electron-chrome-extensions')
@@ -241,8 +242,12 @@ export class ExtensionManager {
     return this.install(source)
   }
 
-  /** Install (or update, for an id already present) from a folder. New installs are pinned unless `opts.pinned` says otherwise. */
-  async install(source: string, opts: { pinned?: boolean } = {}): Promise<ExtensionInfo> {
+  /**
+   * Install (or update, for an id already present) from a folder. New installs
+   * are pinned unless `opts.pinned` says otherwise. `opts.sourcePath` records
+   * where updates come from when `source` is temporary (a store download).
+   */
+  async install(source: string, opts: { pinned?: boolean; sourcePath?: string } = {}): Promise<ExtensionInfo> {
     const installDir = await installCopy(source, this.dir)
     await this.ensureApi()
     let extension: Electron.Extension
@@ -262,7 +267,7 @@ export class ExtensionManager {
       name: extension.name,
       version: extension.version,
       path: installDir,
-      sourcePath: source,
+      sourcePath: opts.sourcePath ?? source,
       enabled: true,
       pinned: previous?.pinned ?? opts.pinned ?? true,
       installedAt: previous?.installedAt ?? Date.now()
@@ -317,16 +322,30 @@ export class ExtensionManager {
     this.emit()
   }
 
-  /** Re-import from the original folder, keeping the extension id and data. */
+  /**
+   * Re-import from the original folder, or download the current version from
+   * the Chrome Web Store for store installs, keeping the extension id and data.
+   */
   async update(id: string): Promise<void> {
     const record = this.records.get(id)
     if (!record) return
-    if (!existsSync(record.sourcePath)) throw new LocalizedError('install.sourceMissing', { path: record.sourcePath })
+    const storeId = webStoreIdOf(record.sourcePath)
+    if (!storeId && !existsSync(record.sourcePath)) throw new LocalizedError('install.sourceMissing', { path: record.sourcePath })
+    const source = storeId ? await downloadFromWebStore(this.ses, storeId) : record.sourcePath
+    try {
+      await this.replaceFrom(record, source)
+    } finally {
+      if (storeId) await rm(source, { recursive: true, force: true })
+    }
+  }
+
+  private async replaceFrom(record: ExtensionRecord, source: string): Promise<void> {
+    const id = record.id
     const wasLoaded = Boolean(this.ses.extensions.getExtension(id))
     const previousVersion = record.version
     this.windows.close(id)
     if (wasLoaded) this.ses.extensions.removeExtension(id)
-    const swap = await replaceCopy(record.sourcePath, record.path)
+    const swap = await replaceCopy(source, record.path)
     try {
       if (record.enabled) {
         await this.ensureApi()

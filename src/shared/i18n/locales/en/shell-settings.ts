@@ -10,6 +10,13 @@ export default {
   'settings.search.customUrlHint': 'Use %s for the search terms, e.g. https://example.com/search?q=%s',
 
   // Appearance
+  'settings.general.title': 'General',
+  'settings.defaultBrowser.label': 'Default browser',
+  'settings.defaultBrowser.isDefault': 'Links from other apps open in Another Arc.',
+  'settings.defaultBrowser.notDefault': 'Links from other apps open in another browser.',
+  'settings.defaultBrowser.make': 'Make Default',
+  'settings.defaultBrowser.done': 'Default',
+
   'settings.appearance.title': 'Appearance',
   'settings.appearance.language': 'Language',
   'settings.appearance.theme': 'Theme',

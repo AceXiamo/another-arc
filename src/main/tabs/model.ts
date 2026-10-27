@@ -540,24 +540,23 @@ export class BrowserModel {
 
   /**
    * Who takes over when `tab` stops being active. Open tabs hand over to their
-   * neighbour (next, then previous). Saved tabs are bookmarks: they go back to
-   * the most recently used live tab rather than waking another bookmark.
+   * open neighbour (next, then previous); the last one leaves the space empty.
+   * Saved tabs are bookmarks: they go back to the most recently used live tab.
+   * Neither ever wakes a bookmark (favorites included).
    */
   private successor(tab: TabData): TabId | null {
     const space = this.spaces.get(tab.spaceId)!
-    const open = this.orderedTabIds(space.id)
+    const open = space.tabIds.filter((t) => t !== tab.id)
     if (!isSavedTab(tab)) {
-      const position = open.indexOf(tab.id)
-      const remaining = open.filter((t) => t !== tab.id)
-      const next = remaining[Math.min(position, remaining.length - 1)]
-      if (next) return next
+      const position = space.tabIds.indexOf(tab.id)
+      return open[Math.min(position, open.length - 1)] ?? null
     }
     let best: TabData | undefined
     for (const id of this.allTabIds(space.id)) {
       const t = this.tabs.get(id)
       if (t && id !== tab.id && t.live && (!best || t.lastActiveAt > best.lastActiveAt)) best = t
     }
-    return best?.id ?? open.find((t) => t !== tab.id) ?? null
+    return best?.id ?? open[0] ?? null
   }
 }
 

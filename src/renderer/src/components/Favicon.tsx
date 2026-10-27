@@ -7,7 +7,8 @@ const INTERNAL_ICONS: Record<string, IconName> = {
   settings: 'settings',
   extensions: 'puzzle',
   history: 'history',
-  downloads: 'download'
+  downloads: 'download',
+  passwords: 'lock'
 }
 
 /**
@@ -38,19 +39,26 @@ function monogramFor(url: string, title: string): { letter: string; hue: number 
   return { letter, hue: MONOGRAM_HUES[hash(host || source) % MONOGRAM_HUES.length]! }
 }
 
-/** Cached favicon with a letter fallback; never hits the network from the shell. */
+/**
+ * Cached favicon with a letter fallback; never hits the network from the shell.
+ * `framed` sets the icon on a tile `size` wide (list rows); the letter
+ * fallback then fills the whole tile.
+ */
 export const Favicon = memo(function Favicon({
   url,
   favicon,
   title,
-  size = 16
+  size = 16,
+  framed = false
 }: {
   url: string
   favicon: string | null
   title: string
   size?: number
+  framed?: boolean
 }) {
   const [failed, setFailed] = useState<string | null>(null)
+  const [loaded, setLoaded] = useState<string | null>(null)
   const internal = parseInternalUrl(url)
   if (internal) {
     return (
@@ -59,43 +67,65 @@ export const Favicon = memo(function Favicon({
       </span>
     )
   }
-  if (!favicon || failed === favicon) {
-    // Letter monogram tinted from the host. Plain CSS (no canvas): the tile
-    // mixes toward --surface and the letter toward --text, so the pair stays
-    // readable in light and dark themes.
-    const { letter, hue } = monogramFor(url, title)
-    return (
-      <span
-        aria-hidden
-        className={`grid shrink-0 select-none place-items-center font-semibold leading-none ${
-          hue === null
-            ? 'bg-[var(--press)] text-[var(--text-2)]'
-            : 'bg-[color-mix(in_oklab,oklch(0.64_0.15_var(--h))_38%,var(--surface))] text-[color-mix(in_oklab,oklch(0.6_0.15_var(--h))_68%,var(--text))]'
-        }`}
-        style={
-          {
-            width: size,
-            height: size,
-            borderRadius: Math.round(size * 0.27),
-            fontSize: Math.round(size * 0.6),
-            '--h': hue ?? 0
-          } as React.CSSProperties
-        }
-      >
-        {letter}
-      </span>
-    )
-  }
-  return (
+  if (!favicon || failed === favicon) return <Monogram url={url} title={title} size={size} framed={framed} />
+  const inner = framed ? Math.round(size * 0.58) : size
+  const img = (
     <img
       src={faviconSrc(favicon)}
-      width={size}
-      height={size}
-      className="shrink-0 rounded-[3px] object-contain"
+      width={inner}
+      height={inner}
+      className="relative shrink-0 rounded-[3px] object-contain"
       decoding="async"
       draggable={false}
       alt=""
+      onLoad={() => setLoaded(favicon)}
       onError={() => setFailed(favicon)}
     />
   )
+  if (!framed) return img
+  return (
+    <span
+      className="relative grid shrink-0 place-items-center bg-[var(--icon-tile)] shadow-[var(--card-shadow)]"
+      style={{ width: size, height: size, borderRadius: Math.round(size * 0.27) }}
+    >
+      {/* An icon fetched on first display can take a moment: the letter
+          stands in, but only if the wait is noticeable. */}
+      {loaded !== favicon && (
+        <span className="absolute inset-0 [animation:fade-in_0.2s_ease-out_0.3s_backwards]">
+          <Monogram url={url} title={title} size={size} framed />
+        </span>
+      )}
+      {img}
+    </span>
+  )
 })
+
+/**
+ * Letter monogram tinted from the host. Plain CSS (no canvas): the tile mixes
+ * toward --surface and the letter toward --text, so the pair stays readable
+ * in light and dark themes.
+ */
+function Monogram({ url, title, size, framed }: { url: string; title: string; size: number; framed: boolean }) {
+  const { letter, hue } = monogramFor(url, title)
+  return (
+    <span
+      aria-hidden
+      className={`grid shrink-0 select-none place-items-center font-semibold leading-none ${
+        hue === null
+          ? 'bg-[var(--press)] text-[var(--text-2)]'
+          : 'bg-[color-mix(in_oklab,oklch(0.64_0.15_var(--h))_38%,var(--surface))] text-[color-mix(in_oklab,oklch(0.6_0.15_var(--h))_68%,var(--text))]'
+      }`}
+      style={
+        {
+          width: size,
+          height: size,
+          borderRadius: Math.round(size * 0.27),
+          fontSize: Math.round(size * (framed ? 0.5 : 0.6)),
+          '--h': hue ?? 0
+        } as React.CSSProperties
+      }
+    >
+      {letter}
+    </span>
+  )
+}

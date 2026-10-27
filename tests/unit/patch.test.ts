@@ -39,6 +39,7 @@ function state(): ShellState {
     extensionPartition: 'persist:default',
     downloads: {},
     permissionPrompts: [],
+    pageDialogs: [],
     find: null,
     isDev: false
   }

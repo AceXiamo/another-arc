@@ -1,4 +1,5 @@
 import { SpaceIcon } from '../../components/SpaceIcon'
+import { quietScrollbar } from '../../lib/quiet-scrollbar'
 import { send } from '../../lib/rpc'
 import { selectActiveSpace, useBrowser } from '../../stores/browser'
 import { useUi } from '../../stores/ui'
@@ -63,7 +64,7 @@ export function TabSections() {
         <SpaceLabel id={space.id} name={space.name} icon={space.icon} />
       </div>
 
-      <div data-sidebar-scroll className="scroll-y flex min-h-0 flex-1 flex-col px-2 pb-2">
+      <div ref={quietScrollbar} data-sidebar-scroll className="scroll-y-quiet flex min-h-0 flex-1 flex-col px-2 pb-2">
         {space.savedIds.length > 0 && <FolderTree spaceId={space.id} savedIds={space.savedIds} />}
 
         <div

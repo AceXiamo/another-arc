@@ -55,11 +55,16 @@ export function buildAppMenu(run: CommandRunner, opts: { isDev: boolean; t: Tran
       label: t('menu.file'),
       submenu: [
         item(t('menu.newTab'), 'tab.new'),
+        // One window, so ⌘N — the new-window key in every other browser —
+        // opens a tab rather than doing nothing.
+        hidden('tab.new', 'Cmd+N'),
         item(t('menu.reopenTab'), 'tab.reopen'),
         { type: 'separator' },
         item(t('menu.openLocation'), 'address.focus'),
         { type: 'separator' },
         item(t('menu.importBrowser'), 'import.browser'),
+        { type: 'separator' },
+        item(t('menu.print'), 'page.print', 'Cmd+P'),
         { type: 'separator' },
         item(t('menu.closeTab'), 'tab.close'),
         item(t('menu.closeWindow'), 'window.close')
@@ -68,7 +73,9 @@ export function buildAppMenu(run: CommandRunner, opts: { isDev: boolean; t: Tran
     {
       label: t('menu.edit'),
       submenu: [
-        { role: 'undo', label: t('menu.undo') },
+        // Text undo while editing, otherwise undo closing a tab or the window
+        // (shortcuts/undo.ts). Not the `undo` role, which only knows text.
+        item(t('menu.undo'), 'edit.undo', 'Cmd+Z'),
         { role: 'redo', label: t('menu.redo') },
         { type: 'separator' },
         { role: 'cut', label: t('menu.cut') },
@@ -114,6 +121,10 @@ export function buildAppMenu(run: CommandRunner, opts: { isDev: boolean; t: Tran
       submenu: [
         item(t('menu.back'), 'tab.back', 'Cmd+['),
         item(t('menu.forward'), 'tab.forward', 'Cmd+]'),
+        // As in Safari and Chrome. A text field keeps them (start / end of
+        // line): it handles the key first, so the menu never sees it.
+        hidden('tab.back', 'Cmd+Left'),
+        hidden('tab.forward', 'Cmd+Right'),
         { type: 'separator' },
         item(t('menu.showAllHistory'), 'open.history', 'Cmd+Y')
       ]

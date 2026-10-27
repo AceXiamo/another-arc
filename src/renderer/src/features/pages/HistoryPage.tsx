@@ -1,7 +1,7 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { Locale, Translate } from '@shared/i18n'
 import type { HistoryEntry } from '@shared/types'
-import { displayUrl } from '@shared/url'
+import { displayHost, displayUrl } from '@shared/url'
 import { Favicon } from '../../components/Favicon'
 import { Icon } from '../../components/Icon'
 import { useLocale, useT } from '../../lib/i18n'
@@ -13,14 +13,125 @@ const PAGE = 100
 /** BCP 47 tag for date and time formatting. */
 const dateLocale = (locale: Locale) => (locale === 'zh-CN' ? 'zh-CN' : 'en-US')
 
-function dayLabel(ts: number, t: Translate, locale: Locale): string {
+/** One row: back-to-back visits of the same page (reloads, redirects back) fold into it. */
+interface Row {
+  ids: number[]
+  url: string
+  title: string
+  favicon: string | null
+  visitedAt: number
+}
+
+interface Day {
+  key: string
+  at: number
+  rows: Row[]
+}
+
+function groupByDay(entries: HistoryEntry[]): Day[] {
+  const days: Day[] = []
+  for (const e of entries) {
+    const key = new Date(e.visitedAt).toDateString()
+    let day = days[days.length - 1]
+    if (day?.key !== key) {
+      day = { key, at: e.visitedAt, rows: [] }
+      days.push(day)
+    }
+    const last = day.rows[day.rows.length - 1]
+    if (last?.url === e.url) last.ids.push(e.id)
+    else day.rows.push({ ids: [e.id], url: e.url, title: e.title, favicon: e.favicon, visitedAt: e.visitedAt })
+  }
+  return days
+}
+
+/** "Today" / "October 24" (+ the year when it is not this one), and the weekday or full date beside it. */
+function dayLabels(ts: number, t: Translate, locale: Locale): { label: string; detail: string } {
+  const tag = dateLocale(locale)
   const d = new Date(ts)
-  const today = new Date()
-  const yesterday = new Date(Date.now() - 86_400_000)
-  const same = (a: Date, b: Date) => a.toDateString() === b.toDateString()
-  if (same(d, today)) return t('history.today')
-  if (same(d, yesterday)) return t('history.yesterday')
-  return d.toLocaleDateString(dateLocale(locale), { month: 'long', day: 'numeric', weekday: 'short' })
+  const now = new Date()
+  const yesterday = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1)
+  const weekday = d.toLocaleDateString(tag, { weekday: 'long' })
+  const relative =
+    d.toDateString() === now.toDateString()
+      ? t('history.today')
+      : d.toDateString() === yesterday.toDateString()
+        ? t('history.yesterday')
+        : null
+  if (relative) return { label: relative, detail: d.toLocaleDateString(tag, { weekday: 'long', month: 'long', day: 'numeric' }) }
+  const year = d.getFullYear() !== now.getFullYear() ? ({ year: 'numeric' } as const) : {}
+  return { label: d.toLocaleDateString(tag, { month: 'long', day: 'numeric', ...year }), detail: weekday }
+}
+
+/** Address without the scheme or a leading "www.", for pages with no title. */
+function bareUrl(url: string): string {
+  return displayUrl(url).replace(/^https?:\/\/(www\.)?/, '')
+}
+
+/** Search words, lowercased, for highlighting. */
+function termsOf(query: string): string[] {
+  return query.toLowerCase().split(/\s+/).filter(Boolean)
+}
+
+/** `text` with every occurrence of the search words marked. */
+function Highlight({ text, terms }: { text: string; terms: string[] }) {
+  if (terms.length === 0) return text
+  const lower = text.toLowerCase()
+  const marks: Array<[number, number]> = []
+  for (const term of terms) {
+    for (let i = lower.indexOf(term); i !== -1; i = lower.indexOf(term, i + term.length)) marks.push([i, i + term.length])
+  }
+  if (marks.length === 0) return text
+  marks.sort((a, b) => a[0] - b[0])
+  const parts: React.ReactNode[] = []
+  let pos = 0
+  for (const [start, end] of marks) {
+    if (end <= pos) continue
+    if (start > pos) parts.push(text.slice(pos, start))
+    parts.push(
+      <mark key={start} className="rounded-[3px] bg-[var(--accent-soft)] text-inherit">
+        {text.slice(Math.max(start, pos), end)}
+      </mark>
+    )
+    pos = end
+  }
+  parts.push(text.slice(pos))
+  return parts
+}
+
+function HistoryRow({ row, terms, onDelete }: { row: Row; terms: string[]; onDelete: (row: Row) => void }) {
+  const t = useT()
+  const locale = useLocale()
+  const open = (background: boolean) => send('tabs.create', { url: row.url, background })
+  return (
+    <div className="group flex h-[46px] items-center rounded-[8px] hover:bg-[var(--hover)] has-[>button:first-child:active]:bg-[var(--press)]">
+      <button
+        title={displayUrl(row.url)}
+        onClick={(e) => open(e.metaKey)}
+        onAuxClick={(e) => e.button === 1 && open(true)}
+        className="flex h-full min-w-0 flex-1 items-center gap-3 rounded-[8px] pl-2 pr-1 text-left outline-none focus-visible:shadow-[inset_0_0_0_1.5px_var(--focus)]"
+      >
+        <Favicon url={row.url} favicon={row.favicon} title={row.title} size={28} framed />
+        <span className="flex min-w-0 flex-1 flex-col">
+          <span className="truncate text-[var(--text-1)] group-hover:text-[var(--text)]">
+            <Highlight text={row.title || bareUrl(row.url)} terms={terms} />
+          </span>
+          <span className="truncate text-[12px] leading-[16px] text-[var(--text-3)]">
+            <Highlight text={displayHost(row.url, locale)} terms={terms} />
+          </span>
+        </span>
+        <span className="shrink-0 text-[12px] tabular-nums text-[var(--text-3)]">
+          {new Date(row.visitedAt).toLocaleTimeString(dateLocale(locale), { hour: '2-digit', minute: '2-digit' })}
+        </span>
+      </button>
+      <button
+        title={t('common.delete')}
+        onClick={() => onDelete(row)}
+        className="mr-1.5 grid h-7 w-7 shrink-0 place-items-center rounded-[7px] text-[var(--ink)] opacity-0 transition-[scale,opacity] duration-150 ease-out hover:bg-[var(--press)] hover:text-[var(--ink-strong)] focus-visible:opacity-100 active:scale-[0.92] group-hover:opacity-100"
+      >
+        <Icon name="close" size={13} strokeWidth={1.8} />
+      </button>
+    </div>
+  )
 }
 
 export default function HistoryPage() {
@@ -79,7 +190,13 @@ export default function HistoryPage() {
     return () => io.disconnect()
   }, [loadMore, done])
 
-  let lastDay = ''
+  const days = useMemo(() => groupByDay(entries), [entries])
+  const terms = useMemo(() => termsOf(query), [query])
+  const remove = useCallback((row: Row) => {
+    send('history.delete', row.ids)
+    setEntries((list) => list.filter((x) => !row.ids.includes(x.id)))
+  }, [])
+
   return (
     <PageLayout
       title={t('page.history')}
@@ -114,51 +231,21 @@ export default function HistoryPage() {
           </button>
         )}
       </label>
-      <div className="-mt-3 flex flex-col">
-        {entries.map((e) => {
-          const day = dayLabel(e.visitedAt, t, locale)
-          const header = day !== lastDay
-          lastDay = day
+      <div className="-mt-5 flex flex-col">
+        {days.map((day) => {
+          const { label, detail } = dayLabels(day.at, t, locale)
           return (
-            <div key={e.id}>
-              {header && (
-                <h2 className="sticky top-0 z-10 -mx-1 mb-1 mt-4 bg-[var(--surface)] px-3 pb-1 pt-2 text-[12px] font-semibold text-[var(--text-2)]">
-                  {day}
-                </h2>
-              )}
-              <div className="group flex h-9 items-center gap-3 rounded-[8px] px-2 hover:bg-[var(--hover)] has-[button:active]:bg-[var(--press)]">
-                {/* 12-hour times ("10:14 PM") need a wider column than "22:14". */}
-                <span
-                  className={`${locale === 'zh-CN' ? 'w-10' : 'w-[58px]'} shrink-0 whitespace-nowrap text-[12px] tabular-nums text-[var(--text-3)]`}
-                >
-                  {new Date(e.visitedAt).toLocaleTimeString(dateLocale(locale), { hour: '2-digit', minute: '2-digit' })}
-                </span>
-                <Favicon url={e.url} favicon={null} title={e.title} />
-                <button
-                  className="flex min-w-0 flex-1 items-baseline gap-2 text-left"
-                  title={e.url}
-                  onClick={() => send('tabs.create', { url: e.url })}
-                >
-                  {/* The title never shrinks (any shrink would ellipsize it); the URL gives way first. */}
-                  <span className="max-w-full shrink-0 truncate text-[var(--text-1)] group-hover:text-[var(--text)]">
-                    {e.title || displayUrl(e.url)}
-                  </span>
-                  {e.title && (
-                    <span className="min-w-0 truncate text-[12px] text-[var(--text-3)]">{displayUrl(e.url)}</span>
-                  )}
-                </button>
-                <button
-                  title={t('common.delete')}
-                  className="grid h-6 w-6 shrink-0 place-items-center rounded-[6px] text-[var(--ink)] opacity-0 hover:bg-[var(--press)] hover:text-[var(--ink-strong)] focus-visible:opacity-100 group-hover:opacity-100"
-                  onClick={() => {
-                    send('history.delete', [e.id])
-                    setEntries((list) => list.filter((x) => x.id !== e.id))
-                  }}
-                >
-                  <Icon name="close" size={13} />
-                </button>
+            <section key={day.key} className="flex flex-col">
+              <h2 className="sticky top-0 z-10 -mx-2 flex items-baseline gap-2 bg-[var(--surface)] px-3 pb-2 pt-5">
+                <span className="text-[13px] font-semibold text-[var(--text-1)]">{label}</span>
+                <span className="text-[12px] text-[var(--text-3)]">{detail}</span>
+              </h2>
+              <div className="flex flex-col rounded-[12px] bg-[var(--surface-2)] p-1 shadow-[var(--card-shadow)]">
+                {day.rows.map((row) => (
+                  <HistoryRow key={row.ids[0]} row={row} terms={terms} onDelete={remove} />
+                ))}
               </div>
-            </div>
+            </section>
           )
         })}
         {loaded && entries.length === 0 && (
@@ -168,8 +255,8 @@ export default function HistoryPage() {
             hint={query ? t('history.noMatchesHint') : t('history.emptyHint')}
           />
         )}
-        {!loaded && (
-          <div className="grid place-items-center py-16">
+        {(!loaded || (entries.length > 0 && !done)) && (
+          <div className={`grid place-items-center ${loaded ? 'py-6' : 'py-16'}`}>
             {/* Shows only if loading takes noticeably long. */}
             <span className="spinner [animation:spin_0.7s_linear_infinite,fade-in_0.2s_ease-out_0.4s_backwards]" />
           </div>

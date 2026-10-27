@@ -25,6 +25,8 @@ export type CommandId =
   | 'tab.duplicate'
   | 'tab.pin'
   | 'tab.copyUrl'
+  | 'edit.undo'
+  | 'page.print'
   | 'address.focus'
   | 'space.next'
   | 'space.prev'

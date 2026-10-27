@@ -55,6 +55,8 @@ export interface TabManagerDelegate {
   htmlFullscreen(on: boolean): void
   /** The active space or its color / theme changed (the window background follows it). */
   activeThemeChanged?(): void
+  /** A tab left the model for good (closed, its space or folder deleted). */
+  tabRemoved?(tabId: TabId): void
 }
 
 export interface TabManagerDeps {
@@ -165,6 +167,8 @@ export class TabManager implements TabRuntimeHost {
   private readonly byWebContents = new Map<number, TabId>()
   private readonly findText = new Map<TabId, string>()
   private closedTabs: ClosedTab[] = []
+  /** When a tab last went onto the reopen stack (for ⌘Z). */
+  lastClosedAt = 0
   private window: BrowserWindowController | null = null
   private delegate: TabManagerDelegate | null = null
   private presentQueued = false
@@ -250,6 +254,18 @@ export class TabManager implements TabRuntimeHost {
 
   tabIdFor(wc: WebContents): TabId | undefined {
     return this.byWebContents.get(wc.id)
+  }
+
+  /** Give a tab a live page without selecting it (agents work in background tabs). */
+  wake(tabId: TabId): TabRuntime | undefined {
+    const tab = this.model.getTab(tabId)
+    if (!tab || isInternalUrl(tab.url)) return undefined
+    let rt = this.runtimes.get(tabId)
+    if (!rt) {
+      rt = this.spawnRuntime(tab)
+      rt.load(tab)
+    }
+    return rt
   }
 
   activeRuntime(): TabRuntime | undefined {
@@ -341,12 +357,15 @@ export class TabManager implements TabRuntimeHost {
     pinned?: boolean
     index?: number
     typed?: boolean
+    /** Runs once the page exists, before it starts loading (agents attach their recorders here). */
+    beforeLoad?: (tabId: TabId, view: TabRuntime['view']) => void
   }): TabData {
     const spaceId = opts.spaceId && this.model.getSpace(opts.spaceId) ? opts.spaceId : this.model.activeSpaceId
     const url = opts.url ?? 'about:blank'
     const tab = newTabData({ spaceId, url, pinned: opts.pinned ?? false })
     if (!isInternalUrl(url)) {
       const rt = this.spawnRuntime(tab)
+      opts.beforeLoad?.(tab.id, rt.view)
       rt.loadUrl(url, opts.typed ?? false)
     }
     this.model.addTab(tab, { index: opts.index, activate: !opts.background })
@@ -356,7 +375,7 @@ export class TabManager implements TabRuntimeHost {
   /** Resolve omnibox input and open it in a new tab. */
   openInput(
     input: string,
-    opts: { background?: boolean; spaceId?: SpaceId; pinned?: boolean; index?: number } = {}
+    opts: Pick<Parameters<TabManager['createTab']>[0], 'background' | 'spaceId' | 'pinned' | 'index' | 'beforeLoad'> = {}
   ): TabData | null {
     const resolved = resolveInput(input, searchTemplate(this.deps.settings.get()))
     if (!resolved) return null
@@ -437,6 +456,16 @@ export class TabManager implements TabRuntimeHost {
     for (const id of order.slice(order.indexOf(tabId) + 1)) {
       if (!this.model.getTab(id)?.pinned) this.closeTab(id)
     }
+  }
+
+  /** Whether there is a closed tab to bring back. */
+  canReopen(): boolean {
+    return this.closedTabs.length > 0
+  }
+
+  /** The system print dialog for a page (internal pages have nothing to print). */
+  print(tabId: TabId): void {
+    this.runtimes.get(tabId)?.wc.print({}, () => undefined)
   }
 
   reopenClosedTab(): void {
@@ -870,7 +899,8 @@ export class TabManager implements TabRuntimeHost {
     for (const id of this.runtimes.keys()) {
       if (id === this.shownTabId) continue
       const tab = this.model.getTab(id)
-      if (tab && !tab.audible) out.push(tab)
+      // An agent may be in the middle of working in it.
+      if (tab && !tab.audible && !tab.agent) out.push(tab)
     }
     return out.sort((a, b) => a.lastActiveAt - b.lastActiveAt)
   }
@@ -965,6 +995,7 @@ export class TabManager implements TabRuntimeHost {
   private pushClosed(closed: ClosedTab): void {
     if (closed.url === 'about:blank' && !closed.navState) return
     this.closedTabs.push(closed)
+    this.lastClosedAt = Date.now()
     if (this.closedTabs.length > LIMITS.closedTabs) this.closedTabs.shift()
   }
 
@@ -1001,14 +1032,19 @@ export class TabManager implements TabRuntimeHost {
     const url = urls.find((u) => /^(https?|data):/.test(u))
     const tab = this.model.getTab(tabId)
     if (!url || !tab) return
+    // The page the icon belongs to; the tab may move on while it downloads.
+    const page = tab.url
     if (this.deps.favicons.has(url)) {
       this.model.updateTab(tabId, { favicon: url })
+      this.deps.history.updateFavicon(page, url)
       return
     }
     const session = this.runtimes.get(tabId)?.wc.session
     if (!session) return
     void this.deps.favicons.ensure(url, session).then((ok) => {
-      if (ok) this.model.updateTab(tabId, { favicon: url })
+      if (!ok) return
+      this.model.updateTab(tabId, { favicon: url })
+      this.deps.history.updateFavicon(page, url)
     })
   }
 
@@ -1023,6 +1059,9 @@ export class TabManager implements TabRuntimeHost {
     const background = disposition === 'background-tab'
     return {
       action: 'allow',
+      // Electron destroys children with their opener by default; a tab must
+      // survive its opener being closed or unloaded.
+      outlivesOpener: true,
       createWindow: (options) => this.adoptOpenedWindow(opener, url, options, background)
     }
   }
@@ -1167,6 +1206,7 @@ export class TabManager implements TabRuntimeHost {
       tabRemoved: (tab) => {
         shell.tab(tab.id, null)
         persister.removeTab(tab.id)
+        this.delegate?.tabRemoved?.(tab.id)
       },
       spaceAdded: (space) => {
         shell.space(space.id, { ...space }, true)

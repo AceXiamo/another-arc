@@ -5,18 +5,22 @@
 // Keys are namespaced by module (`sidebar.*`, `palette.*`, …) and live in
 // one file per module so modules can be translated independently.
 // Placeholders use `{name}` and are filled by `translate`.
+import enAgent from './locales/en/agent'
 import enCommon from './locales/en/common'
 import enExtImport from './locales/en/ext-import'
 import enTheme from './locales/en/theme'
 import enMain from './locales/en/main'
+import enPasswords from './locales/en/passwords'
 import enShellPages from './locales/en/shell-pages'
 import enShellPalette from './locales/en/shell-palette'
 import enShellSettings from './locales/en/shell-settings'
 import enShellSidebar from './locales/en/shell-sidebar'
+import zhAgent from './locales/zh-CN/agent'
 import zhCommon from './locales/zh-CN/common'
 import zhExtImport from './locales/zh-CN/ext-import'
 import zhTheme from './locales/zh-CN/theme'
 import zhMain from './locales/zh-CN/main'
+import zhPasswords from './locales/zh-CN/passwords'
 import zhShellPages from './locales/zh-CN/shell-pages'
 import zhShellPalette from './locales/zh-CN/shell-palette'
 import zhShellSettings from './locales/zh-CN/shell-settings'
@@ -39,7 +43,9 @@ const en = {
   ...enShellSettings,
   ...enShellPages,
   ...enExtImport,
-  ...enTheme
+  ...enPasswords,
+  ...enTheme,
+  ...enAgent
 }
 
 export type MessageKey = keyof typeof en
@@ -55,7 +61,9 @@ const zhCN: Messages = {
   ...zhShellSettings,
   ...zhShellPages,
   ...zhExtImport,
-  ...zhTheme
+  ...zhPasswords,
+  ...zhTheme,
+  ...zhAgent
 }
 
 const DICTIONARIES: Record<Locale, Messages> = { en, 'zh-CN': zhCN }

@@ -58,5 +58,11 @@ export default {
   'status.net.blocked': '{host} was blocked by an extension.',
   'status.net.changed': 'The network changed while connecting to {host}.',
   'status.net.invalidUrl': 'The address of {host} is invalid.',
-  'status.net.generic': '{host} might be temporarily down, or it may have moved permanently to a new address.'
+  'status.net.generic': '{host} might be temporarily down, or it may have moved permanently to a new address.',
+
+  // A page's alert() / confirm() / prompt(). {host} is the asking site, with its port if any.
+  'pageDialog.says': '{host} says',
+  'pageDialog.thisPageSays': 'This page says',
+  'pageDialog.ok': 'OK',
+  'pageDialog.suppress': 'Don’t let this page show more dialogs'
 } satisfies Record<string, string>

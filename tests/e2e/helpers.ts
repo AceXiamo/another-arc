@@ -238,6 +238,13 @@ export async function startServer(): Promise<{ url: string; server: Server; repo
       res.end(`<!doctype html><title>${title}</title><body style="font:16px system-ui;padding:24px">${body || title}</body>`)
     }
     switch (url.pathname) {
+      case '/login':
+        return page(
+          'Sign in',
+          '<form id="f"><input id="u" name="user" type="text" autocomplete="username">' +
+            '<input id="p" name="pw" type="password" autocomplete="current-password">' +
+            '<button type="submit">Sign in</button></form>'
+        )
       case '/favicon.ico':
         res.writeHead(200, { 'content-type': 'image/svg+xml' })
         res.end('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><rect width="16" height="16" rx="3" fill="#e33"/></svg>')

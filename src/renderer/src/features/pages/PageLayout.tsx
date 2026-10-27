@@ -4,15 +4,28 @@ import { Illustration, type IllustrationName } from '../../components/Illustrati
 export function PageLayout({
   title,
   actions,
+  back,
   children
 }: {
   title: string
   actions?: React.ReactNode
+  /** A page reached from another one: a link back to it above the title. */
+  back?: { label: string; onClick: () => void }
   children: React.ReactNode
 }) {
   return (
     <div className="scroll-y h-full select-text">
-      <div className="mx-auto flex max-w-[720px] flex-col gap-7 px-8 pb-20 pt-12">
+      <div className={`mx-auto flex max-w-[720px] flex-col gap-7 px-8 pb-20 ${back ? 'pt-6' : 'pt-12'}`}>
+        {back && (
+          <button
+            data-page-back
+            onClick={back.onClick}
+            className="-mb-5 -ml-1.5 flex h-7 w-fit items-center gap-0.5 rounded-[7px] pl-0.5 pr-2 text-[13px] text-[var(--text-2)] hover:bg-[var(--hover)] hover:text-[var(--text)] active:bg-[var(--press)]"
+          >
+            <Icon name="back" size={15} strokeWidth={1.8} />
+            {back.label}
+          </button>
+        )}
         <header className="flex min-h-8 items-center gap-3">
           <h1 className="flex-1 text-[24px] font-semibold leading-tight tracking-[-0.01em]">{title}</h1>
           {actions}

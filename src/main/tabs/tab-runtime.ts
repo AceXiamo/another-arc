@@ -10,6 +10,7 @@ import {
   type WindowOpenHandlerResponse
 } from 'electron'
 import { LIMITS } from '@shared/defaults'
+import { outPath } from '../app/environment'
 import type { TabError, TabId } from '@shared/types'
 import type { NavState } from '../persistence/records'
 import type { TabData } from './model'
@@ -33,6 +34,9 @@ export interface TabRuntimeHost {
 
 const PAGE_WEB_PREFERENCES = {
   sandbox: true,
+  // Sign-in autofill. Sandboxed and context-isolated: the page cannot see
+  // it, and it does nothing until a password field is focused.
+  preload: outPath('preload', 'page.cjs'),
   contextIsolation: true,
   nodeIntegration: false,
   nodeIntegrationInSubFrames: false,

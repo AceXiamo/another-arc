@@ -34,6 +34,9 @@ export default defineConfig({
       rollupOptions: {
         input: {
           shell: resolve(import.meta.dirname, 'src/preload/shell.ts'),
+          page: resolve(import.meta.dirname, 'src/preload/page.ts'),
+          // Not a preload: read as text by main and injected when an agent works in a tab.
+          'agent-runtime': resolve(import.meta.dirname, 'src/preload/agent-runtime.ts'),
           'extension-compat': resolve(import.meta.dirname, 'src/preload/extension-compat.ts')
         },
         output: { format: 'cjs', entryFileNames: '[name].cjs' }

@@ -130,6 +130,11 @@ export class PermissionManager {
     this.db.run('DELETE FROM site_permissions WHERE origin = ? AND permission = ?', origin, permission)
   }
 
+  set(origin: string, permission: string, decision: PermissionDecision): void {
+    this.sessionOnly.delete(key(origin, permission))
+    this.save(origin, permission, decision)
+  }
+
   prompts(): PermissionPrompt[] {
     return [...this.pending.values()].map((p) => p.prompt)
   }

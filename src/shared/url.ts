@@ -11,7 +11,8 @@ export const INTERNAL_PAGES = {
   settings: 'page.settings',
   extensions: 'page.extensions',
   history: 'page.history',
-  downloads: 'page.downloads'
+  downloads: 'page.downloads',
+  passwords: 'page.passwords'
 } as const satisfies Record<string, MessageKey>
 
 export type InternalPage = keyof typeof INTERNAL_PAGES

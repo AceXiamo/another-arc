@@ -35,6 +35,7 @@ export function applyPatch(state: ShellState, patch: StatePatch): Partial<ShellS
   if (patch.settings) next.settings = { ...state.settings, ...patch.settings }
   if (patch.extensions) next.extensions = patch.extensions
   if (patch.permissionPrompts) next.permissionPrompts = patch.permissionPrompts
+  if (patch.pageDialogs) next.pageDialogs = patch.pageDialogs
   if ('find' in patch) next.find = patch.find ?? null
   return next
 }

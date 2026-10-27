@@ -61,6 +61,8 @@ export function sanitizeSettings(input: unknown): Partial<Settings> {
   if (isIntIn(raw.memoryBudgetMB, 0, 1 << 17)) out.memoryBudgetMB = raw.memoryBudgetMB
   if (raw.theme === 'system' || raw.theme === 'light' || raw.theme === 'dark') out.theme = raw.theme
   if (isLocale(raw.language)) out.language = raw.language
+  if (typeof raw.agentEnabled === 'boolean') out.agentEnabled = raw.agentEnabled
+  if (isIntIn(raw.agentPort, 1024, 65535)) out.agentPort = raw.agentPort
   return out
 }
 

@@ -1,12 +1,15 @@
 import { useEffect, useState } from 'react'
 import type { ImportableBrowser } from '@shared/ext-import'
+import { siteOf, type SavedLogin } from '@shared/passwords'
 import { LOCALES, type MessageKey } from '@shared/i18n'
 import type { SearchEngineId, Settings, SitePermission } from '@shared/types'
-import { isValidSearchTemplate, SEARCH_ENGINES } from '@shared/url'
+import { internalUrl, isValidSearchTemplate, SEARCH_ENGINES } from '@shared/url'
+import { Icon } from '../../components/Icon'
 import { useT } from '../../lib/i18n'
 import { rpc, send } from '../../lib/rpc'
-import { useBrowser } from '../../stores/browser'
-import { PageLayout, Row, Section, Select, SmallButton, Toggle } from './PageLayout'
+import { selectActiveTab, useBrowser } from '../../stores/browser'
+import { AgentSettings } from './AgentSettings'
+import { PageLayout, PrimaryButton, Row, Section, Select, SmallButton, Toggle } from './PageLayout'
 
 const PERMISSION_LABELS: Record<string, MessageKey> = {
   media: 'settings.permissions.media',
@@ -28,6 +31,39 @@ function update(patch: Partial<Settings>) {
   send('settings.update', patch)
 }
 
+/**
+ * Whether links from other apps open here, and a button to make it so.
+ * macOS confirms the switch in its own dialog, after which the window gets
+ * the focus back: check again then.
+ */
+function DefaultBrowserRow() {
+  const t = useT()
+  const [isDefault, setDefault] = useState<boolean | null>(null)
+  useEffect(() => {
+    const check = () => void rpc('defaultBrowser.get').then(setDefault)
+    check()
+    window.addEventListener('focus', check)
+    return () => window.removeEventListener('focus', check)
+  }, [])
+  return (
+    <Row
+      label={t('settings.defaultBrowser.label')}
+      hint={isDefault === null ? undefined : isDefault ? t('settings.defaultBrowser.isDefault') : t('settings.defaultBrowser.notDefault')}
+    >
+      {isDefault ? (
+        <span className="flex items-center gap-1 text-[12px] font-medium text-[var(--text-2)]">
+          <Icon name="check" size={14} strokeWidth={2} className="text-[var(--accent)]" />
+          {t('settings.defaultBrowser.done')}
+        </span>
+      ) : (
+        isDefault === false && (
+          <PrimaryButton onClick={() => void rpc('defaultBrowser.set').then(setDefault)}>{t('settings.defaultBrowser.make')}</PrimaryButton>
+        )
+      )}
+    </Row>
+  )
+}
+
 export default function SettingsPage() {
   const t = useT()
   const settings = useBrowser((s) => s.settings)
@@ -45,6 +81,20 @@ export default function SettingsPage() {
   useEffect(() => {
     void rpc('import.browsers', profiles).then(setBrowsers)
   }, [profiles])
+
+  // Saved logins: a summary here, the list on its own page (browser://passwords).
+  const [logins, setLogins] = useState<SavedLogin[] | null>(null)
+  const [canSave, setCanSave] = useState(true)
+  useEffect(() => {
+    void rpc('passwords.list').then(setLogins)
+    void rpc('passwords.available').then(setCanSave)
+  }, [])
+  const tabId = useBrowser((s) => selectActiveTab(s)?.id)
+  const loginSummary = !logins
+    ? ''
+    : logins.length === 0
+      ? t('passwords.settings.empty')
+      : t('passwords.settings.summary', { count: logins.length, sites: new Set(logins.map((l) => siteOf(l.origin))).size })
 
   const offers = (b: ImportableBrowser) =>
     [
@@ -68,6 +118,10 @@ export default function SettingsPage() {
 
   return (
     <PageLayout title={t('page.settings')}>
+      <Section title={t('settings.general.title')}>
+        <DefaultBrowserRow />
+      </Section>
+
       <Section title={t('settings.search.title')}>
         <Row label={t('settings.search.engine')} hint={t('settings.search.engineHint')}>
           <Select value={settings.searchEngine} options={engines} onChange={(searchEngine) => update({ searchEngine })} />
@@ -161,6 +215,26 @@ export default function SettingsPage() {
           ))}
         </Section>
       )}
+
+      <Section title={t('passwords.settings.section')} description={t('passwords.settings.description')}>
+        {canSave ? (
+          <button
+            data-open-passwords
+            onClick={() => tabId && send('tabs.navigate', tabId, internalUrl('passwords'))}
+            className="flex min-h-[50px] w-full items-center gap-4 rounded-[12px] px-4 py-2.5 text-left hover:bg-[var(--hover)] active:bg-[var(--press)]"
+          >
+            <div className="min-w-0 flex-1">
+              <div className="truncate">{t('passwords.settings.saved')}</div>
+              <div className="mt-0.5 min-h-[1lh] text-[12px] leading-snug text-[var(--text-3)]">{loginSummary}</div>
+            </div>
+            <Icon name="chevron" size={14} strokeWidth={2} className="-rotate-90 text-[var(--ink)]" />
+          </button>
+        ) : (
+          <div className="px-4 py-3.5 text-[var(--text-3)]">{t('passwords.settings.unavailable')}</div>
+        )}
+      </Section>
+
+      <AgentSettings />
 
       <Section title={t('settings.permissions.title')} description={t('settings.permissions.description')}>
         {permissions.length === 0 ? (

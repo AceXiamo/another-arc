@@ -14,6 +14,7 @@ const zh: Record<keyof typeof en, string> = {
   'menu.reopenTab': '重新打开关闭的标签页',
   'menu.openLocation': '打开地址…',
   'menu.importBrowser': '从浏览器导入…',
+  'menu.print': '打印…',
   'menu.closeTab': '关闭标签页',
   'menu.closeWindow': '关闭窗口',
   'menu.edit': '编辑',
@@ -111,9 +112,23 @@ const zh: Record<keyof typeof en, string> = {
   'spaceMenu.delete': '删除空间…',
 
   'extMenu.options': '选项',
-  'extMenu.pin': '固定到工具栏',
-  'extMenu.unpin': '从工具栏取消固定',
+  'extMenu.pin': '固定到地址栏',
+  'extMenu.unpin': '从地址栏取消固定',
   'extMenu.manage': '管理扩展',
+
+  'webStore.confirm.title': '要添加“{name}”吗？',
+  'webStore.confirm.add': '添加扩展',
+  'webStore.confirm.allSites': '它可以读取和更改你在所有网站上的数据。',
+  'webStore.confirm.someSites': '它可以读取和更改你在 {sites} 上的数据。',
+  'webStore.confirm.apis': '它会使用：{apis}',
+  'webStore.confirm.noPermissions': '它不需要特殊权限。',
+  'webStore.installed': '已添加“{name}”',
+  'webStore.installFailed': '无法添加“{name}”：{error}',
+
+  'siteMenu.copyUrl': '拷贝网址',
+  'siteMenu.print': '打印…',
+  'siteMenu.devtools': '开发者工具',
+  'siteMenu.siteSettings': '网站设置…',
 
   'dialog.deleteSpace.title': '删除空间“{name}”？',
   'dialog.deleteSpace.detail': '其中的 {count} 个标签页将被关闭。',

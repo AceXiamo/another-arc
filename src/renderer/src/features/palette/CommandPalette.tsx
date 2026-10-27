@@ -52,7 +52,7 @@ const COMMANDS: Command[] = [
     id: `open:${page}`,
     words: [...LOCALES.map((l) => translate(l.id, name)), page],
     title: (t: Translate) => t('palette.command.openPage', { page: t(name) }),
-    icon: ({ settings: 'settings', extensions: 'puzzle', history: 'history', downloads: 'download' } as const)[page],
+    icon: ({ settings: 'settings', extensions: 'puzzle', history: 'history', downloads: 'download', passwords: 'lock' } as const)[page],
     run: () => send('tabs.openInternal', page)
   })),
   {
@@ -199,7 +199,7 @@ export function CommandPalette({ mode, cardLeft }: { mode: PaletteMode; cardLeft
         seen.add(h.url)
         out.push({
           key: `h:${h.url}`,
-          icon: { kind: 'favicon', url: h.url, favicon: null, title: h.title },
+          icon: { kind: 'favicon', url: h.url, favicon: h.favicon ?? null, title: h.title },
           title: h.title || displayUrl(h.url),
           subtitle: displayUrl(h.url),
           hint: openHint,

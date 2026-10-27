@@ -29,7 +29,7 @@ pnpm typecheck    # tsc (main/preload, renderer, tests)
 pnpm test         # unit tests (Vitest)
 pnpm test:e2e     # build + integration tests (Playwright driving Electron)
 pnpm check        # typecheck + unit tests + build
-pnpm dist         # build + package release/Another Arc.app and a .dmg (arm64, ad-hoc signed)
+pnpm dist         # build + package release/Another Arc.app and a .dmg (arm64; signed with your Apple Development / Developer ID certificate if you have one, else ad hoc)
 ```
 
 Integration tests open real windows but never take focus. Uncaught main-process errors are written to `<userData>/logs/main.log`; no error dialog is shown.

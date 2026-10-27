@@ -11,7 +11,8 @@ BaseWindow (hiddenInset 标题栏，红绿灯在侧边栏左上)
 └── surface WebContentsView ← 非模态浮层（查找栏）；由 shell 用 window.open 打开，与 shell 同进程
 ```
 
-- **同一时刻只挂载一个页面视图**。切换标签/Space 只是替换这一个子视图；被移除的视图对 Chromium 而言变为 hidden，自动进入定时器节流。
+- **同一时刻只挂载一个页面视图**。切换标签/Space 只是替换这一个子视图。不在窗口里的视图（被移除的，和在后台打开、从没挂上去的）对 Chromium 而言是 hidden：`visibilityState` 为 `hidden`，不出帧、不跑 rAF，定时器对齐到每秒一次（实测 500ms 的 `setTimeout` 要等约 1 秒）。这就是后台标签的节流，不需要额外代码。
+  - 测试注意：Playwright 给它连上的每个页面都开 `Emulation.setFocusEmulationEnabled`，Chromium 把这算作一个"可见的捕获者"，所以在 `_electron.launch` 下所有页面永远是 visible、每秒 60 帧，连整个窗口隐藏都一样。节流相关的断言放在 `tests/e2e/background-tabs.spec.ts`：它自己启动应用，经 Node inspector 驱动 main，不让 Playwright 连页面。
 - **模态浮层不新增进程**：命令面板打开时把 shell 视图调到最上层（`setOverlay(true)`）。shell 的内容区是透明"镂空卡片"（`ContentArea` 用超大 `box-shadow` 画出卡片外的窗口底色，卡片内透明），所以页面在下方依然可见；关闭时页面视图回到上层。
 - **非模态浮层共用 shell 进程**：查找栏需要在页面可交互时浮在上面。shell 调用 `window.open('about:blank', 'arc-surface:find')`，main 在 `setWindowOpenHandler` 的 `createWindow` 中把该 guest WebContents 包进一个透明 WebContentsView。opener 同源，Chromium 保证二者同进程（实测 pid 相同），React 直接 portal 渲染进子文档，状态共享 Zustand store，零 IPC。
 - **布局在 main 里算**：卡片位置由 `src/shared/layout.ts` 的纯函数从窗口尺寸 + 侧边栏宽度算出。窗口 resize 时 main 同步设置页面视图 bounds，不等待 renderer 测量回传，侧边栏与页面始终同帧对齐。
@@ -56,6 +57,12 @@ BaseWindow (hiddenInset 标题栏，红绿灯在侧边栏左上)
   - localStorage 是整个分区一个库，没有合并两个库的办法，所以是替换，原库改名 `leveldb.before-import` 留作备份。这一步会替换掉本地已有的网站数据，确认框里说明了。
   - IndexedDB 是一个网站一个目录，所以是真合并：本地没有这个网站的就移进来，已经有的一律不动（移入前再查一次，暂存之后到重启之间这个网站可能刚存了东西）。一个网站的 `.indexeddb.leveldb` 和 `.indexeddb.blob` 一起走。`chrome-extension_…` 跳过——确认框里说了扩展数据不复制，悄悄搬钱包 vault 是另一回事。存储键被顶层站点分区的那些在 `WebStorage/<bucket id>/` 下、还要配额库里的一行，和 CHIPS cookie 一样带不过来。
 - 只读一个配置：浏览器每个配置一套 cookie，合在一起同一个站点会互相覆盖。设置页按浏览器列出可导入的内容，配置多于一个时给个下拉选；默认是该浏览器最近使用的那个。
+- 密码（`src/main/passwords/`）：存在 `logins` 表（迁移 v4），密码字段是 Electron `safeStorage` 的密文，拿登录钥匙串加密，明文从不落库、不进日志、不走 IPC 到外壳。钥匙串拿不到密钥时直接不保存，绝不退化成明文。
+- 自动填充的链路：网页侧多了一个 preload（`src/preload/page.ts`，沙箱 + 上下文隔离，页面自己的脚本够不着），只挂几个捕获阶段监听器，不轮询、加载时不遍历 DOM。下拉框**只在用户操作时**打开：点进登录字段、Tab 进去、在里面按 ↓。脚本调 `focus()`、窗口重新获得焦点、填充后我们自己聚焦密码框，都不打开——最初对每个 `focusin` 都响应，结果和下面那条焦点问题叠在一起转成了死循环。键盘事件只认 `isTrusted`，页面没法合成 ↓ + Enter 替用户选一个。main 的 `PasswordManager` 决定给什么、放在哪：**origin 一律从发消息的 WebContents 自己的 URL 读，不信消息里带的**，所以被攻陷的页面要不到别的站点的凭据。选中之后密码从 main 直接发回那个页面的 preload 写进字段，整条路径不经过外壳。
+- 下拉框和「保存密码？」都是浮层（`SURFACES`），但和查找栏不同，它们 `takesFocus: false`：显示时不拿键盘、隐藏时不还焦点。下拉框要是拿了键盘，正在服务的那个输入框就会失焦——preload 报失焦 → 关下拉 → 焦点还给页面 → 输入框又 `focusin` → 再弹 → 再抢，就是"一直闪"。不拿焦点之后，↑↓/Enter/Esc 留在页面的输入框里，由 preload 转给 main，main 再把选中行推给外壳。点一下行仍会让浮层短暂拿到焦点，所以页面"整个失焦"时 main 等 `BLUR_GRACE_MS`（150ms）再关，让那次点击的选择先到；点在行与行之间的空白上就保持打开、把焦点还给输入框。浮层隐藏时若它正拿着焦点，**先移除视图、再**把焦点还给页面——反过来的话，移除一个仍聚焦的视图会把刚给页面的焦点又清掉（二分出来的）。
+- 下拉框的位置由 `PasswordManager.place()` 按字段矩形乘页面缩放算出，卡片左边缘对齐字段，底部放不下就翻到上方，并夹在页面卡片内。浮层比卡片大出阴影的空间，但**面向字段的那一边不留**——那里的透明边会吞掉本该点在字段上的点击；翻到上方时由外壳把卡片贴到浮层底边。几何常量在 `@shared/passwords`，main 按它算浮层尺寸、外壳按它画，两边必须一致，否则差出来的高度就是卡片底下的空白。页面滚动时 preload 每帧上报一次新位置让下拉框跟着走，字段滚出视野才关；聚焦常常会触发 `scrollIntoView`，一滚就关的话下拉框刚弹出就没了。超过 4 条可滚动，键盘选中的行自动滚进视野。
+- 设置页能看、能复制、能删。「显示」走 Touch ID（`systemPreferences.promptTouchID`），没有 Touch ID 就只能复制——复制是 main 直接写剪贴板，密码同样不经过外壳。
+- 从其他浏览器导入密码（`chromium-passwords.ts`）：和 cookie 同一把钥匙串密钥。三类行跳过并分别计数：`android://` 的是从手机同步来的应用凭据、`blacklisted_by_user` 的「从不保存」条目没有密码、`keychain_identifier` 非空的老条目密码单独存在那个浏览器自己的钥匙串项里，文件里没有可解的东西。
 - 右键菜单（侧边栏空白处、文件夹、标签）都是 main 里的原生菜单；新建文件夹后 main 发 `folder.rename` 命令，外壳显示内联重命名框。
 
 ## 标签生命周期与内存
@@ -70,6 +77,17 @@ BaseWindow (hiddenInset 标题栏，红绿灯在侧边栏左上)
 - **休眠（discard）**：`TabDiscarder` 每分钟检查一次，闲置超过设置时长的后台标签被释放；设置了内存预算时，超出预算按 LRU 释放。释放前用 `navigationHistory.getAllEntries()` 保存完整前进/后退栈（含 `pageState`，即滚动位置/表单状态），激活时 `navigationHistory.restore()` 还原。正在播放音频、打开了 DevTools、或 `beforeunload` 拒绝卸载的页面不会被释放。
 - 关闭标签时立即从模型移除（UI 即时响应），后台以 `waitForBeforeUnload` 关闭 WebContents；页面拒绝卸载时弹窗确认，用户选择留下则把标签原位恢复。
 
+## 网页对话框（alert / confirm / prompt）
+
+- Electron 44 自己的处理方式：Chromium 把对话框交给 WebContents 上的私有事件 `-run-dialog`，Electron 在 JS 里（`lib/browser/api/web-contents.ts`）用 `dialog.showMessageBox(getOwnerBrowserWindow(), …)` 弹原生 sheet。放在我们的 `BaseWindow` 上就是整个窗口的 sheet：后台标签也能弹出来盖住当前页、不显示是哪个网站在问、按钮只有英文。`prompt()` 更彻底——Electron 的渲染进程初始化（`lib/renderer/window-setup.ts`）在每个页面主 world 里把它换成直接抛 "prompt() is not supported." 的函数，根本到不了浏览器进程。
+- 所以 `PageDialogs`（`src/main/tabs/page-dialogs.ts`）在每个标签的 WebContents 创建时（`runtimeCreated`）换掉 Electron 的 `-run-dialog` 处理器；`prompt()` 由页面 preload（`src/preload/page-prompt.ts`）在主 world 换回一个用同步 IPC 问 main 的实现，进同一个队列（来源取自 `senderFrame`，不信消息内容）。没有 preload 的子 frame 保留原生 `prompt()`，照样走 `-run-dialog`。替换依赖私有事件名：哪天 Electron 不再发 `-run-dialog`，`attach` 打一条警告并保留 Electron 的默认行为，`tests/e2e/dialogs.spec.ts` 也会失败。
+- **外壳绘制、标签级模态**：待回答的对话框放在 `pageDialogs` 状态里，外壳在当前标签的页面卡片顶部画一个 sheet（`PageDialogSheet`），标题是「<host:端口> 显示」，来源由 main 从发起的 frame 取。显示期间外壳升到页面之上（和命令面板同一个 overlay 机制，`effects.ts`）：页面压暗、可见但点不到，侧边栏照常能用。Enter 确定、Esc 取消，prompt 的默认文字预先全选；回答后 overlay 撤掉、焦点回到页面。
+- **只有屏幕上的那个标签能弹**（和 Chrome 一样）：后台标签的对话框立即按「取消」返回；切换标签、开始新的文档导航（⌘R、输入网址）、关闭标签、渲染进程崩溃都会把正在显示的那个按「取消」结束。这样后台不会攒下没人看的对话框，休眠也不用顾及它们。
+- **例外是 Agent 正在操作的标签**（`PageDialogHost.heldForAgent`）：它的对话框不论在不在屏幕上都留着，等 Agent 用 `handle_dialog` 回答（`PageDialogs.respond`，外壳里的 sheet 同步消失）；用户切到这个标签也会看到 sheet，可以自己答。Agent 停手（45 秒无调用）后重新按普通规则处理，还没答的后台对话框按「取消」结束，页面不会一直冻着。页面冻在对话框上时，Agent 的页面调用直接报出对话框内容而不是等到超时；会等页面的 CDP 命令（文件选择框拦截、唤醒）这时也不去等。
+- **safeDialogs**：同一页面、同一来源从第二个对话框起提供「禁止此网页再显示对话框」，勾上后该来源之后的对话框直接返回取消。Chromium 在用户发起的导航或跨站导航时通过 `-cancel-dialogs` 的 `resetState` 要求清零，我们照做（Electron 自己的实现忽略了它）。`disableDialogs` 照旧生效。
+- **不阻塞主进程**：main 只记下回调，页面在自己的渲染进程里等；没有原生模态循环，MCP 服务等照常运行。
+- 测试注意：Playwright 通过 CDP 连着每个页面，没有 `dialog` 监听时会立刻替你把对话框关掉（confirm 返回 false、什么都看不到），所以测网页对话框要先 `app.context().on('dialog', () => {})`，交给应用处理。同理，CDP 的 `Page.handleJavaScriptDialog` 会绕过我们直接回答页面，外壳里的 sheet 要等下一次导航或切换标签才消失。
+
 ## 持久化
 
 - 使用 Electron 自带 Node 的 **`node:sqlite`**（无需原生模块编译），WAL + `synchronous=NORMAL`，所有语句预编译缓存。
@@ -82,9 +100,10 @@ BaseWindow (hiddenInset 标题栏，红绿灯在侧边栏左上)
 两条互不重叠的路径，避免重复触发：
 
 1. **保留快捷键**（⌘T/⌘W/⌘⇧T/⌘L/⌘1–9/Ctrl+Tab/⌘⇧[ ]/⌘⌥←→/⌘⇧W）：在所有页面视图、shell、浮层的 `before-input-event` 中按物理键码匹配并 `preventDefault`，网页无法拦截。菜单里对应项 `registerAccelerator: false`，仅显示快捷键。
-2. **普通快捷键**（⌘F、⌘R、⌘±/0、⌘S、⌘D…）：注册为原生菜单加速键，网页先拿到按键，未处理时才由菜单执行（例如 Google Docs 可以接管 ⌘F）。
+2. **普通快捷键**（⌘F、⌘R、⌘±/0、⌘S、⌘D、⌘Z、⌘P、⌘N、⌘←/→…）：注册为原生菜单加速键，网页先拿到按键，未处理时才由菜单执行（例如 Google Docs 可以接管 ⌘F）。
 
-编辑类快捷键（复制/粘贴/撤销…）使用菜单 role，保证在网页和 shell 输入框中都可用。
+编辑类快捷键（复制/粘贴…）使用菜单 role，保证在网页和 shell 输入框中都可用。**⌘Z 例外**（`shortcuts/undo.ts`）：和 Arc 一样，正在编辑文字时是撤销文字，否则是撤销关闭——窗口被关了就重新显示，否则重开最近关闭的标签。判断顺序：网页自己处理 ⌘Z 的（编辑器）菜单根本收不到；关闭标签之后还没打过字（所有按键都经过 `handleReservedKeys`，那里记下最后打字的时间）就重开，哪怕接手的页面有聚焦的输入框；否则到获得焦点的视图里、在 context isolation 的隔离世界中问一句焦点是不是可编辑元素（页面脚本改不了它读到的东西），是就撤销文字。焦点在原生面板（比如另存为对话框）上时用 `Menu.sendActionToFirstResponder('undo:')` 交还给系统，不然那里的输入框会失去撤销。
+单窗口，所以 ⌘N 也是新建标签；⌘P 打印；⌘←/→ 后退前进（输入框里它们先被输入框处理成行首/行尾，菜单收不到）。
 
 ## 安全
 
@@ -109,6 +128,30 @@ BaseWindow (hiddenInset 标题栏，红绿灯在侧边栏左上)
 - **扩展窗口**（`src/main/extensions/extension-window.ts`）：在扩展库创建 PopupView 之前接管工具栏点击（运行时替换 `BrowserActionAPI.activateClick`），Popup 和侧边面板都在一个带标准标题栏的子窗口里打开：可拖动、失焦不关闭、每个扩展一个、记住位置。再点一次按钮关闭。没有 Popup 也没有面板时仍派发 `action.onClicked`（必要时先唤醒 SW）。
 - **Popup 尺寸**（`src/main/extensions/popup-fit.ts`）：Electron 44 不触发 `preferred-size-changed`。改为按 Chrome 的规则自行测量：内容最小不溢出宽度，以及该宽度下的高度；窗口在测量完之后才显示，之后只增大不缩小，用户手动调整过就不再跟随。
 - 详细的兼容性数据见 `docs/PHASE0-REPORT.md`。
+
+## Agent（MCP）
+
+让 Claude Code、Codex 这类 Agent 以用户的身份使用浏览器：读网页、点击、输入、跑脚本、看控制台和网络。代码在 `src/main/agent/`，页面那一半在 `src/preload/agent-runtime.ts`。
+
+- **默认关闭，关着时零成本**：设置里打开后，`Browser.syncAgent` 才动态导入 `agent-service`。开关和端口改动串行执行，快速来回切也不会乱。
+- **传输**：主进程内置 MCP Streamable HTTP（`mcp-server.ts`，不依赖 Electron，有单测）。只回 JSON，不开 SSE（浏览器从不主动推消息，GET 回 405），没用官方 SDK，主进程不多一个依赖。只监听 `127.0.0.1`；`Host` 必须是回环地址，挡掉把自己域名重绑到 127.0.0.1 的网页；带 `Origin` 的请求一律拒绝（MCP 客户端不是网页）；每个请求都要 `Authorization: Bearer <token>`。令牌存在设置表里，可以在设置页换新。`initialize` 会发会话 id，只用来认出客户端名字（光标上显示的 "Claude Code"）；不认识的会话 id 照常服务，不强迫客户端重新握手。
+- **页面在 Agent 眼里的样子**（`agent-runtime.ts`，在独立的 isolated world 1001 里运行，页面脚本看不到也改不了）：
+  - `read_page`：正文转成 Markdown。先找主体（占比够大的 article / main，否则 body），去掉导航、页头页脚、cookie 横幅、分享栏这类样板内容。代码块保留语言，表格转成 Markdown 表格（布局表格退化成文本，全空的行丢掉）。为了省 token：同站链接只写路径（头部注明一次），去掉 utm_* 这类跟踪参数；图片默认不出（链接里的图片用 alt 当链接文字，正文里够大的图写成 `[image: alt]`，小图标直接丢），`images: true` 才写 `![alt](src)`；`links: false` 连链接地址也不要。`query` 只返回和问题相关的段落：按块（段落、列表、表格、代码）给关键词打分，挑分最高的塞满预算，按原文顺序带上所在的标题输出，命中标题时带上该节开头几块。内容按偏移量分页，默认 2 万字符；截断时列出后面各节标题和偏移量，可以直接跳过去。用户选中的文字会放在开头。
+  - `snapshot`：类似无障碍树的精简文本。一行一个元素，写角色、可访问名称和状态（`checked`、`expanded=false`、`value=…`）。可操作的元素带 ref（`[e12]`）。不带语义的 div/span 化掉；只包着一个子元素的 listitem/row/cell 折叠；名称取自内容的元素不再重复文字；纯文字的表格行压成 `row: a | b`。没有语义但光标变成手形、或者有 `tabindex` 的元素标成 `clickable`（div 按钮）。打开着的模态框排在最前面。会穿透 open shadow DOM、slot 和同源 iframe。
+  - snapshot 的压缩：重复父元素名字的图片（"@name" 链接里的头像）丢掉，带名字的控件里的图标并进同一行（`link "35,846" [e29] img "star"`）；连续三个以上没有状态的链接或按钮合成一行（`- links: "Docs" [e3], "Blog" [e4], …`）；标题里只有一个同名链接时写成 `heading level=2 > link "…" [e28]`；链接地址默认不写（没名字的链接除外），`urls: true` 才写。
+  - snapshot 有大小预算（默认 1.2 万字符，约 3k token；`ref=` 时翻倍）：超了就把视口外的部分折叠成一行摘要（在视口上方/下方、约多少行、里面有多少链接按钮、有哪些标题），先折叠视口外的导航/页脚/侧栏，再选「刚好够」的那一段，都不够就折最大的。折叠的是连续的同级节点，单个元素的折叠行带 ref，`snapshot ref=` 就能展开；`find` 照样能搜到折叠掉的部分。实测（1012×804 窗口）：Wikipedia 条目 3.5 万 → 6.4K 字符，MDN Array 8.8 万 → 3.5K，GitHub Trending 1.56 万 → 9K（没超预算，靠逐行压缩）。
+  - ref 按标签跨文档递增编号：新文档的运行时从上一个文档用到的编号往后接，所以旧页面的 ref 不会悄悄指到新页面的元素上，而是明确报"这个 ref 属于已离开的页面"。
+- **操作走真实输入**：点击、悬停、拖动用 `sendInputEvent`，输入用 `insertText`。页面收到的事件都是 `isTrusted`。坐标是 CSS px 乘以页面缩放。点击前先滚动到视野内，再在顶层做命中测试（穿透 shadow root 和同源 iframe）。被遮住时拒绝点击，并说明被什么遮住（`covered by <div#veil>`）。macOS 的编辑快捷键（⌘A/C/X/V/Z）不经过渲染进程的按键处理，合成出来的 ⌘A 什么都选不中，所以改为直接调用 `selectAll()` 这类编辑命令。动作执行完会汇报引起的导航、新开的标签和打开的对话框；页面冻在 alert / confirm / prompt 上时由 `handle_dialog` 回答（见「网页对话框」）。
+- **后台标签也能用**：从没显示过的视图是 0×0，页面不排版，所以 Agent 第一次碰它时给它卡片大小（不挂到窗口上）。光有大小还不够：后台标签是 hidden 的（见上文），不跑 rAF、IntersectionObserver 和 CSS 过渡，定时器被节流；从没画过一帧的页面还会丢掉输入（点击、按键都没反应，只有 `insertText` 能进去），`capturePage` 直接报错。所以 Agent 用一个标签时先把它叫醒（`TabDriver.wake`）：用 CDP 打开 `Emulation.setFocusEmulationEnabled`，Chromium 把它算作可见的捕获者，页面不挂到窗口上也照常渲染，一帧之内（实测约 15ms）就能点、能截图，页面也认为自己有焦点，和用户在里面打字时一样。每次工具调用、每次调用页面运行时都续期，Agent 停手 3 秒后关掉，标签回到 hidden，重新节流。`open_tab` 默认在后台打开，用户切过去就能看。
+- **DevTools 协议只用在别的办法做不到的地方**：叫醒后台标签、网络记录、文件输入（`DOM.setFileInputFiles`）、拦截文件选择框。拦截只在 Agent 点击的那一下前后开启，不影响用户自己点。`open_tab` 在页面开始加载之前就挂上 Network，连主文档请求也能记到。控制台日志不走 CDP，直接用 `console-message` 事件，开启 Agent 后每个标签都记最近 300 条。
+- 页面原生右键菜单会跑一个嵌套的事件循环，卡住整个主进程（包括 MCP 服务），所以 Agent 右键时把它压下去。
+- **把 Agent 的操作画出来**：
+  - 标签显示在屏幕上、Agent 在干活时，页面四周有一圈旋转的彩虹光：边缘一道细亮边，内侧一层会呼吸的柔光，两层转速不同，颜色会流动（`presence`）。每次工具调用都续一次；Agent 停手 45 秒时主进程把它关掉，万一这条消息没送到，页面自己 50 秒后也会关。关的时候只对已经注入了运行时的页面发消息，不会为了关灯去注入。
+  - 彩虹只用在这圈光上，其余一律天空蓝、从简。光标是一个短而宽的圆角箭头：天空蓝实心填充、粗白描边、淡淡的投影，背后一圈呼吸的天空蓝光晕，滑向目标时会顺着方向倾斜一下。旁边的天空蓝标签带一个呼吸的白色状态点，写着客户端名字和正在做的事（「点击 “Sign in”」「输入到 “Email”」，按用户语言由主进程生成），靠近窗口边缘时翻到另一侧。要操作的元素外出现一个天空蓝细框；点击处扩散一圈天空蓝波纹；`snapshot` / `read_page` / `find` 时一道天空蓝扫描线从上往下扫过（最多 2.5 秒一次）。
+  - 都画在 closed shadow root 里；样式全部通过 CSSOM 设置，页面的 CSP 管不到；动画用 WAAPI，只动 transform 和 opacity，页面主线程忙也不卡。彩虹是一张 96px 的 canvas 锥形渐变，由合成器放大、旋转，从不重绘，也不会生成页面大小的纹理。`prefers-reduced-motion` 时不转、不扫。
+  - 后台标签不画，也不为动画等待。截图前先隐藏整个叠加层，等两帧再截。光标空闲 4 秒淡出（它的循环动画随之暂停）；光圈也没了之后 2 秒从 DOM 里移除。
+  - 外壳这边：`TabState.agent`（不持久化）为真时，侧边栏标签的图标角上有个呼吸的天空蓝小点，显示中的页面卡片外有一圈同样的彩虹细边，外面一层柔光在间隙里往窗口边缘淡出（同一个 canvas 做法；柔光的遮罩把中间挖空，页面透明或还没画出来时也不会透出彩虹）。和页面里那圈光拼起来，像是光从页面边缘发出来。Agent 停手 45 秒后撤掉标记；带标记的标签不会被休眠。
+- 实测：GitHub 仓库页的完整 snapshot 约 3.7 万字符（压缩前），耗时约 20 ms；正文提取约 10 ms。
 
 ## 启动路径
 

@@ -58,7 +58,13 @@ const zh: Record<keyof typeof en, string> = {
   'status.net.blocked': '{host} 已被扩展程序拦截。',
   'status.net.changed': '{host} 网络发生了变化。',
   'status.net.invalidUrl': '{host} 的网址无效。',
-  'status.net.generic': '{host} 暂时无法访问，或已永久移至新地址。'
+  'status.net.generic': '{host} 暂时无法访问，或已永久移至新地址。',
+
+  // A page's alert() / confirm() / prompt()
+  'pageDialog.says': '{host} 显示',
+  'pageDialog.thisPageSays': '此网页显示',
+  'pageDialog.ok': '确定',
+  'pageDialog.suppress': '禁止此网页再显示对话框'
 }
 
 export default zh

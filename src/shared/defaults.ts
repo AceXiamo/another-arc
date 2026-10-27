@@ -1,3 +1,4 @@
+import { AGENT_DEFAULT_PORT } from './agent'
 import { DEFAULT_LOCALE, type MessageKey } from './i18n'
 import { LAYOUT } from './layout'
 import type { Settings, WindowState } from './types'
@@ -10,7 +11,9 @@ export const DEFAULT_SETTINGS: Settings = {
   discardAfterMinutes: 30,
   memoryBudgetMB: 0,
   theme: 'system',
-  language: DEFAULT_LOCALE
+  language: DEFAULT_LOCALE,
+  agentEnabled: false,
+  agentPort: AGENT_DEFAULT_PORT
 }
 
 export const DEFAULT_WINDOW_STATE: Omit<WindowState, 'activeSpaceId'> = {

@@ -101,10 +101,29 @@ describe('BrowserModel', () => {
     expect(m.getSpace('s1')!.activeTabId).toBe('c')
     m.removeTab('c')
     expect(m.getSpace('s1')!.activeTabId).toBe('a')
+    // The last open tab leaves the space empty instead of waking a favorite.
     m.removeTab('a')
-    expect(m.getSpace('s1')!.activeTabId).toBe('p')
-    m.removeTab('p')
     expect(m.getSpace('s1')!.activeTabId).toBeNull()
+  })
+
+  it('closing the last open tab skips live favorites too', () => {
+    const { m } = setup()
+    m.updateTab('p', { live: true })
+    m.activateTab('p', 100)
+    m.removeTab('b')
+    m.removeTab('c')
+    m.activateTab('a', 200)
+    m.removeTab('a')
+    expect(m.getSpace('s1')!.activeTabId).toBeNull()
+  })
+
+  it('a closed favorite hands over to the last live tab, never another favorite', () => {
+    const { m } = setup()
+    m.addTab(tab('q', 's1', true))
+    m.activateTab('p')
+    m.deactivateTab('p')
+    // Nothing is live: back to an open tab, not the favorite next to it.
+    expect(m.getSpace('s1')!.activeTabId).toBe('a')
   })
 
   it('closing a background tab keeps the active tab', () => {

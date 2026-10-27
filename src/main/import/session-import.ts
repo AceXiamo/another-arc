@@ -10,6 +10,8 @@ import {
 } from './chromium-cookies'
 import { indexedDbSurvey, localStorageBytes, stageIndexedDb, stageLocalStorage } from './chromium-storage'
 import { browserKeychain } from './browsers'
+import { countImportablePasswords, readPasswordDatabase, type PasswordSkips } from './chromium-passwords'
+import type { PasswordStore } from '../passwords/password-store'
 import { KeychainError, readSafeStorageKey } from './chromium-crypt'
 
 // "Bring my logins over": one profile's cookies, localStorage and
@@ -34,6 +36,8 @@ export interface SessionSummary {
   localStorageBytes: number
   /** Sites whose IndexedDB would be moved in, and what they weigh. */
   indexedDb: { origins: number; bytes: number }
+  /** Saved passwords worth offering. */
+  passwords: number
 }
 
 /** localStorage and IndexedDB together, as the confirmation counts them. */
@@ -48,6 +52,7 @@ export interface SessionResult {
   skipped: CookieSkips
   /** What is waiting for the next launch; zeroes when nothing is. */
   staged: { localStorageBytes: number; indexedDbOrigins: number; indexedDbBytes: number }
+  passwords: { imported: number; skipped: PasswordSkips }
   /** Why no cookies came over, when none did. */
   failure: 'keychain' | 'unreadable' | null
 }
@@ -77,8 +82,16 @@ export async function surveySession(
   // only way to tell which IndexedDB sites are new here.
   const bytes = partition ? await localStorageBytes(profileDir) : 0
   const indexedDb = partition ? await indexedDbSurvey(profileDir, userData, partition) : { origins: 0, bytes: 0 }
-  if (cookies === 0 && bytes === 0 && indexedDb.origins === 0) return null
-  return { browser, profileDir, cookies, hosts, localStorageBytes: bytes, indexedDb }
+  let passwords = 0
+  try {
+    passwords = await withDatabaseCopy(join(profileDir, 'Login Data'), 'LoginData', (copy) =>
+      countImportablePasswords(copy)
+    )
+  } catch {
+    // No password database, or one we cannot read.
+  }
+  if (cookies === 0 && bytes === 0 && indexedDb.origins === 0 && passwords === 0) return null
+  return { browser, profileDir, cookies, hosts, localStorageBytes: bytes, indexedDb, passwords }
 }
 
 /**
@@ -90,21 +103,24 @@ export async function importSession(
   ses: Session,
   summary: SessionSummary,
   userData: string,
-  partition: string | null
+  partition: string | null,
+  passwords: PasswordStore
 ): Promise<SessionResult> {
   const result: SessionResult = {
     cookies: 0,
     rejected: 0,
     skipped: { partitioned: 0, sessionOnly: 0, expired: 0, undecryptable: 0, malformed: 0 },
     staged: { localStorageBytes: 0, indexedDbOrigins: 0, indexedDbBytes: 0 },
+    passwords: { imported: 0, skipped: { android: 0, blacklisted: 0, inKeychain: 0, undecryptable: 0 } },
     failure: null
   }
 
-  if (summary.cookies > 0) {
-    const key = await safeStorageKey(summary.browser)
-    if (key === null) {
-      result.failure = 'keychain'
-    } else {
+  const needsKey = summary.cookies > 0 || summary.passwords > 0
+  const key = needsKey ? await safeStorageKey(summary.browser) : null
+  if (needsKey && key === null) result.failure = 'keychain'
+
+  if (summary.cookies > 0 && key) {
+    {
       try {
         const jar = await withDatabaseCopy(join(summary.profileDir, 'Cookies'), 'Cookies', (copy) =>
           readCookieDatabase(copy, key)
@@ -117,6 +133,20 @@ export async function importSession(
         console.error('[import] could not read the cookie database', error)
         result.failure = 'unreadable'
       }
+    }
+  }
+
+  if (summary.passwords > 0 && key && passwords.available) {
+    try {
+      const read = await withDatabaseCopy(join(summary.profileDir, 'Login Data'), 'LoginData', (copy) =>
+        readPasswordDatabase(copy, key)
+      )
+      result.passwords.skipped = read.skipped
+      for (const entry of read.passwords) {
+        if (passwords.save(entry.origin, entry.username, entry.password)) result.passwords.imported += 1
+      }
+    } catch (error) {
+      console.error('[import] could not read the password database', error)
     }
   }
 

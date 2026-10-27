@@ -1,4 +1,4 @@
-import type { SurfaceId } from './layout'
+import type { Rect, SurfaceId } from './layout'
 import type { InternalPage } from './url'
 import type {
   ExtensionInfo,
@@ -23,6 +23,9 @@ export const IPC = {
   patch: 'arc:patch',
   command: 'arc:command'
 } as const
+
+/** Page preload → main, synchronous: a page's prompt(); the reply is the text, or null. */
+export const PAGE_PROMPT_IPC = 'arc:page:prompt'
 
 export interface CreateTabOptions {
   url?: string
@@ -107,9 +110,20 @@ export interface ShellRpc {
   'tabs.reopenClosed': () => void
   'tabs.contextMenu': (tabId: TabId, at: Point) => void
   'tabs.copyUrl': (tabId: TabId) => void
+  /** The macOS share menu for the page's address. */
+  'tabs.share': (tabId: TabId, at: Point) => void
+  /** Copy what the page shows to the clipboard as an image; false when it has no live page. */
+  'tabs.copyScreenshot': (tabId: TabId) => boolean
+  /** The site controls' "more" menu. */
+  'tabs.siteMenu': (tabId: TabId, at: Point) => void
   /** Proceed past a certificate error for this host (session only). */
   'tabs.allowCertificate': (tabId: TabId) => void
   'tabs.openInternal': (page: InternalPage) => void
+
+  /** Whether macOS opens http(s) links with this app. */
+  'defaultBrowser.get': () => boolean
+  /** Ask macOS to make this app the default browser (it confirms with the user itself). */
+  'defaultBrowser.set': () => boolean
 
   'spaces.create': (input: SpaceInput) => SpaceId
   'spaces.update': (spaceId: SpaceId, input: Partial<SpaceInput>) => void
@@ -136,6 +150,8 @@ export interface ShellRpc {
   /** Double-click on a title-bar area: the system action (zoom, minimize or nothing). */
   'window.titleBarDoubleClick': () => void
   'surface.setVisible': (id: SurfaceId, visible: boolean) => void
+  /** Bounds of the site controls surface, in window coordinates. */
+  'sitePanel.place': (bounds: Rect) => void
 
   'history.suggest': (query: string, limit: number) => Suggestion[]
   'history.list': (query: string, before: number, limit: number) => HistoryEntry[]
@@ -173,6 +189,24 @@ export interface ShellRpc {
   /** Same, for whichever browser has the most to bring over (palette). */
   'import.best': () => void
 
+  /** Saved logins, without their passwords. */
+  'passwords.list': () => import('./passwords').SavedLogin[]
+  /** False when the OS will not give us a key, so nothing can be saved. */
+  'passwords.available': () => boolean
+  /** Fill the pick from the sign-in dropdown into the page that asked for it. */
+  'passwords.fill': (id: string) => void
+  /** Close the dropdown without filling anything. */
+  'passwords.dismiss': () => void
+  /** Close the dropdown and open the saved passwords in Settings. */
+  'passwords.manage': () => void
+  /** Answer the "save this password?" prompt. */
+  'passwords.resolveSave': (accept: boolean) => void
+  'passwords.remove': (id: string) => void
+  /** Put one password on the clipboard. It never travels to the shell. */
+  'passwords.copy': (id: string) => boolean
+  /** Show one password, behind Touch ID. Null when it cannot be unlocked. */
+  'passwords.reveal': (id: string) => string | null
+
   'downloads.open': (id: string) => void
   'downloads.reveal': (id: string) => void
   'downloads.cancel': (id: string) => void
@@ -189,8 +223,20 @@ export interface ShellRpc {
   'permissions.respond': (promptId: string, decision: PermissionDecision, remember: boolean) => void
   'permissions.list': () => SitePermission[]
   'permissions.reset': (origin: string, permission: string) => void
+  /** Change a remembered decision (site controls). */
+  'permissions.set': (origin: string, permission: string, decision: PermissionDecision) => void
+
+  /** Answer a page's alert / confirm / prompt; `suppress` blocks further ones from that origin. */
+  'pageDialogs.respond': (dialogId: string, accept: boolean, text: string, suppress: boolean) => void
 
   'devtools.toggle': (tabId: TabId) => void
+
+  /** State of the agent (MCP) server; waits for a start or stop in progress. */
+  'agent.info': () => import('./agent').AgentInfo
+  /** Put the token or a client's setup snippet on the clipboard. */
+  'agent.copy': (what: import('./agent').AgentSnippet) => void
+  /** Replace the token; every agent has to be set up again. */
+  'agent.regenerateToken': () => import('./agent').AgentInfo
 }
 
 export type RpcMethod = keyof ShellRpc

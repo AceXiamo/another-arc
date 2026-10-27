@@ -65,18 +65,35 @@ export function pageRadius(input: LayoutInput): number {
  * child window of the shell rendered by the shell's own JS, so it shares
  * the shell's renderer process and costs no extra memory.
  */
+/**
+ * Floating views above the page. `takesFocus`: the surface is typed into, so
+ * showing it moves the keyboard there and hiding it gives it back to the
+ * page. The others float without ever taking focus from the page — a sign-in
+ * dropdown that grabbed the keyboard would blur the very field it serves.
+ */
 export const SURFACES = {
-  find: { width: 400, height: 72, margin: 4 }
+  find: { width: 400, height: 72, margin: 4, align: 'right', takesFocus: true },
+  /** Sign-in dropdown; placed at the focused field, not by `surfaceBounds`. */
+  autofill: { width: 280, height: 52, margin: 0, align: 'right', takesFocus: false },
+  /** "Save this password?", opposite the find bar so the two never collide. */
+  passwordSave: { width: 380, height: 104, margin: 4, align: 'left', takesFocus: false },
+  /**
+   * Site controls, hanging from the address pill. The shell places it
+   * (`sitePanel.place`) and it floats above the shell as well, so it never
+   * has to raise the shell over the page.
+   */
+  sitePanel: { width: 320, height: 480, margin: 0, align: 'left', takesFocus: true }
 } as const
 
 export type SurfaceId = keyof typeof SURFACES
 
 export function surfaceBounds(id: SurfaceId, card: Rect): Rect {
   const s = SURFACES[id]
+  const width = Math.min(s.width, card.width)
   return {
-    x: Math.max(card.x, card.x + card.width - s.width - s.margin),
+    x: s.align === 'left' ? card.x + Math.min(s.margin, card.width - width) : Math.max(card.x, card.x + card.width - width - s.margin),
     y: card.y + s.margin,
-    width: Math.min(s.width, card.width),
+    width,
     height: s.height
   }
 }

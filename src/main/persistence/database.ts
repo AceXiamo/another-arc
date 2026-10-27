@@ -208,6 +208,25 @@ const MIGRATIONS: string[] = [
   // NULL = the defaults (spaces saved before v3). Sanitized on load.
   `
   ALTER TABLE spaces ADD COLUMN theme TEXT;
+  `,
+  // v4 — saved logins. `password` holds safeStorage ciphertext, never text:
+  // the row is worthless without the login keychain. One credential per
+  // (origin, username), so saving the same sign-in again updates it.
+  `
+  CREATE TABLE logins (
+    id TEXT PRIMARY KEY,
+    origin TEXT NOT NULL,
+    username TEXT NOT NULL,
+    password BLOB NOT NULL,
+    created_at INTEGER NOT NULL,
+    last_used_at INTEGER NOT NULL,
+    times_used INTEGER NOT NULL DEFAULT 0
+  );
+  CREATE UNIQUE INDEX logins_by_origin_user ON logins(origin, username);
+  `,
+  // v5 — the favicon a history page last showed (a key into `favicons`).
+  `
+  ALTER TABLE history_urls ADD COLUMN favicon TEXT;
   `
 ]
 

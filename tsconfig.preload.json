@@ -1,0 +1,19 @@
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "lib": [
+      "ES2024",
+      "DOM",
+      "DOM.Iterable"
+    ],
+    "types": [
+      "node"
+    ],
+    "composite": true,
+    "outDir": "out/.tsc-preload"
+  },
+  "include": [
+    "src/preload/**/*",
+    "src/shared/**/*"
+  ]
+}

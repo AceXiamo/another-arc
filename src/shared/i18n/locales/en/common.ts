@@ -13,6 +13,7 @@ export default {
   'page.extensions': 'Extensions',
   'page.history': 'History',
   'page.downloads': 'Downloads',
+  'page.passwords': 'Passwords',
 
   'tab.newTabTitle': 'New Tab',
 

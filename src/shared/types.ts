@@ -43,6 +43,8 @@ export interface TabState {
   error: TabError | null
   zoomFactor: number
   lastActiveAt: number
+  /** An agent (MCP) is driving this tab right now. Not persisted. */
+  agent?: boolean
 }
 
 /** Light/dark mode of the chrome while a space is active; 'system' follows Settings. */
@@ -124,6 +126,10 @@ export interface Settings {
   theme: 'system' | 'light' | 'dark'
   /** UI language (menus, dialogs, shell). */
   language: Locale
+  /** Serve the MCP endpoint that lets AI agents use the browser (src/main/agent). */
+  agentEnabled: boolean
+  /** Local port of that endpoint. */
+  agentPort: number
 }
 
 export interface ExtensionInfo {
@@ -198,6 +204,20 @@ export interface PermissionPrompt {
   details: string[]
 }
 
+/** A page's alert() / confirm() / prompt(), waiting for the user; the shell draws it over that tab's page. */
+export interface PageDialog {
+  id: string
+  tabId: TabId
+  kind: 'alert' | 'confirm' | 'prompt'
+  /** Origin of the frame that asked: 'null' for opaque ones, 'file://' for local files. */
+  origin: string
+  message: string
+  /** prompt() only: what the field starts with. */
+  defaultText: string
+  /** safeDialogs: not the first from this origin, so the user may block the rest. */
+  canSuppress: boolean
+}
+
 export interface SitePermission {
   origin: string
   permission: PermissionKind
@@ -224,6 +244,7 @@ export interface ShellSnapshot {
   extensionPartition: string
   downloads: Record<string, DownloadState>
   permissionPrompts: PermissionPrompt[]
+  pageDialogs: PageDialog[]
   find: FindState | null
   isDev: boolean
 }
@@ -242,6 +263,7 @@ export interface StatePatch {
   extensions?: ExtensionInfo[]
   downloads?: Record<string, Partial<DownloadState> | null>
   permissionPrompts?: PermissionPrompt[]
+  pageDialogs?: PageDialog[]
   find?: FindState | null
 }
 
@@ -250,6 +272,8 @@ export interface HistoryEntry {
   url: string
   title: string
   visitedAt: number
+  /** Cached icon URL (see `faviconSrc`): the page's own, else one from its site. */
+  favicon: string | null
 }
 
 export type SuggestionKind = 'history' | 'tab'
@@ -258,6 +282,8 @@ export interface Suggestion {
   kind: SuggestionKind
   url: string
   title: string
+  /** History suggestions: the page's icon, as in `HistoryEntry`. */
+  favicon?: string | null
   tabId?: TabId
 }
 
@@ -270,3 +296,12 @@ export type ShellCommand =
   | { type: 'space.edit'; spaceId: SpaceId | 'new'; theme?: boolean }
   | { type: 'folder.rename'; folderId: FolderId }
   | { type: 'toast'; message: string }
+  /**
+   * Sign-in dropdown: what to list (null closes it), the row picked by
+   * keyboard (-1: none), and whether it sits above the field.
+   */
+  | { type: 'autofill'; entries: import('./passwords').AutofillEntry[] | null; active: number; above: boolean }
+  /** Offer to remember a sign-in the user just made. */
+  | { type: 'password.offerSave'; origin: string; username: string }
+  /** The site controls lost focus (a press anywhere else): close them. */
+  | { type: 'sitePanel.dismiss' }

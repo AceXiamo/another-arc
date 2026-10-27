@@ -1,15 +1,33 @@
+import { randomBytes } from 'node:crypto'
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
-import { app, dialog, Menu, nativeTheme, session, WebContentsView, type BrowserWindow, type IpcMainInvokeEvent, type WebContents } from 'electron'
+import {
+  app,
+  clipboard,
+  dialog,
+  Menu,
+  nativeTheme,
+  session,
+  webContents,
+  WebContentsView,
+  type BrowserWindow,
+  type IpcMainInvokeEvent,
+  type WebContents
+} from 'electron'
+import { agentSnippet, agentUrl, type AgentInfo, type AgentSnippet } from '@shared/agent'
 import { DEFAULT_PROFILE_ID, DEFAULT_SPACE, DEFAULT_WINDOW_STATE } from '@shared/defaults'
 import type { ImportableBrowser, ImportBrowser } from '@shared/ext-import'
 import { chromeColor } from '@shared/theme'
-import { clampSidebarWidth, SURFACE_FRAME_PREFIX, surfaceBounds, SURFACES, type SurfaceId } from '@shared/layout'
+import { clampSidebarWidth, SURFACE_FRAME_PREFIX, surfaceBounds, SURFACES, type Rect, type SurfaceId } from '@shared/layout'
 import type { ShellSnapshot, WindowState } from '@shared/types'
 import { translator, type Translate } from '@shared/i18n'
 import { buildSearchUrl, internalUrl, SEARCH_ENGINES, searchTemplate, type InternalPage } from '@shared/url'
+import type { AgentService } from '../agent/agent-service'
 import { DownloadManager } from '../downloads/download-manager'
+import { PasswordManager } from '../passwords/password-manager'
+import { PasswordStore } from '../passwords/password-store'
 import { ExtensionManager } from '../extensions/extension-manager'
+import { WebStore } from '../extensions/web-store'
 import { FaviconCache } from '../history/favicon-cache'
 import { HistoryService } from '../history/history-service'
 import { RpcRouter } from '../ipc/router'
@@ -24,6 +42,7 @@ import { SettingsService } from '../settings/settings-service'
 import type { CommandId } from '../shortcuts/commands'
 import { isReservedKeyUp, reservedCommandFor } from '../shortcuts/keymap'
 import { buildAppMenu } from '../shortcuts/menu'
+import { decideUndo, isEditingText, isTyping } from '../shortcuts/undo'
 import {
   bestImportCandidate,
   importFromBrowser,
@@ -32,6 +51,7 @@ import {
   type ImportHost
 } from '../import/import-flow'
 import { TabDiscarder } from '../tabs/discarder'
+import { PageDialogs } from '../tabs/page-dialogs'
 import { TabManager } from '../tabs/tab-manager'
 import { ZOOM_SETTINGS_KEY, ZoomStore } from '../tabs/zoom'
 import { BrowserWindowController } from '../windows/browser-window'
@@ -41,6 +61,7 @@ import { mark, startupMarks } from './perf'
 import { handleAppProtocols, SHELL_ORIGIN, shellUrl } from './protocols'
 
 const ARC_IMPORT_OFFERED_KEY = 'import.arcOffered'
+const AGENT_TOKEN_KEY = 'agent.token'
 /** Let the window paint before asking. */
 const ARC_IMPORT_OFFER_DELAY_MS = 600
 
@@ -64,7 +85,9 @@ export class Browser {
   readonly shell = new ShellSync()
   readonly tabs: TabManager
   readonly downloads: DownloadManager
+  readonly passwords: PasswordManager
   readonly permissions: PermissionManager
+  readonly dialogs: PageDialogs
   readonly extensions: ExtensionManager
   readonly discarder: TabDiscarder
   readonly router: RpcRouter
@@ -79,10 +102,19 @@ export class Browser {
   private readonly pendingUrls: string[] = []
   /** Visibility requested before the surface's view finished being created. */
   private readonly pendingSurfaces = new Map<SurfaceId, boolean>()
+  /** Where the shell last placed the site controls (window coordinates). */
+  private sitePanelBounds: Rect = { x: 0, y: 0, width: SURFACES.sitePanel.width, height: SURFACES.sitePanel.height }
   /** The one-time "Import from Arc?" offer was already shown on this profile. */
   private arcImportOffered = false
+  /** When a key was last typed anywhere in the app (for ⌘Z). */
+  private lastTypedAt = 0
   /** Last native window background set (see syncWindowBackground). */
   private windowColor = ''
+  /** Agents (MCP): loaded the first time they are turned on. */
+  private agent: AgentService | null = null
+  private agentToken: string
+  /** Starts and stops run one after another, however fast the toggle flips. */
+  private agentSync: Promise<void> = Promise.resolve()
 
   constructor() {
     this.db = new Database(userDataPath('browser.db'))
@@ -108,6 +140,18 @@ export class Browser {
     this.persister.attach(this.tabs)
 
     this.downloads = new DownloadManager(this.db, this.shell, this.settings)
+    this.passwords = new PasswordManager(new PasswordStore(this.db), {
+      tabIdFor: (wc) => this.tabs.tabIdFor(wc) ?? null,
+      setDropdownVisible: (visible) => {
+        if (!visible) this.shell.command({ type: 'autofill', entries: null, active: -1, above: false })
+        this.setSurfaceVisible('autofill', visible)
+      },
+      showEntries: (entries, active, above) => this.shell.command({ type: 'autofill', entries, active, above }),
+      reposition: () => this.window?.repositionSurface('autofill'),
+      dropdownFocused: () => this.window?.getSurface('autofill')?.view.webContents.isFocused() ?? false,
+      offerToSave: (origin, username) => this.shell.command({ type: 'password.offerSave', origin, username })
+    })
+    this.passwords.attach()
     this.permissions = new PermissionManager(this.db, {
       tabIdFor: (wc) => this.tabs.tabIdFor(wc),
       promptsChanged: (prompts) => {
@@ -115,6 +159,12 @@ export class Browser {
         // Prompts live in the sidebar; make sure it is visible.
         if (prompts.length > 0 && this.windowState.sidebarCollapsed) this.setSidebar({ collapsed: false })
       }
+    })
+    this.dialogs = new PageDialogs({
+      tabIdFor: (wc) => this.tabs.tabIdFor(wc),
+      isShown: (wc) => this.window?.currentPage?.webContents === wc,
+      heldForAgent: (wc) => this.agent?.drives(wc) ?? false,
+      changed: (dialogs) => this.shell.pageDialogs(dialogs)
     })
     this.profiles.setSessionInitializer((_profile, ses) => {
       this.permissions.attach(ses)
@@ -139,9 +189,23 @@ export class Browser {
         }
       }
     )
+    // The Chrome Web Store's install buttons (answers its pages over IPC).
+    new WebStore({
+      extensions: this.extensions,
+      session: profileSession,
+      isTab: (wc) => this.tabs.tabIdFor(wc) !== undefined,
+      window: () => this.window?.win ?? null,
+      confirm: (message, detail) => this.confirm(message, detail),
+      toast: (message) => this.shell.command({ type: 'toast', message }),
+      get t() {
+        return browser.t
+      }
+    })
     this.discarder = new TabDiscarder(this.tabs, this.settings)
 
     this.arcImportOffered = stored.get(ARC_IMPORT_OFFERED_KEY) === true
+    const token = stored.get(AGENT_TOKEN_KEY)
+    this.agentToken = typeof token === 'string' ? token : ''
     const layout = (stored.get('window.layout') ?? {}) as Partial<WindowState>
     this.windowState = {
       ...DEFAULT_WINDOW_STATE,
@@ -165,6 +229,7 @@ export class Browser {
         this.installMenu()
         this.tabs.relocalizeSpaceNames(patch.language)
       }
+      if (patch.agentEnabled !== undefined || patch.agentPort !== undefined) this.syncAgent()
     })
     // Pages follow the browser theme through prefers-color-scheme.
     nativeTheme.themeSource = this.settings.get().theme
@@ -184,7 +249,11 @@ export class Browser {
     // Packaged builds get the icon from the bundle; dev runs borrow it here.
     const devIcon = join(app.getAppPath(), 'resources', 'icon.png')
     if (!app.isPackaged && existsSync(devIcon)) app.dock?.setIcon(devIcon)
-    handleAppProtocols(this.favicons, (request) => this.extensions.handleIconRequest(request))
+    handleAppProtocols(
+      this.favicons,
+      (request) => this.extensions.handleIconRequest(request),
+      () => this.profiles.sessionFor(DEFAULT_PROFILE_ID)
+    )
     hardenDefaultSession()
     this.installMenu()
 
@@ -209,6 +278,7 @@ export class Browser {
     }, 500).unref()
 
     this.discarder.start()
+    this.syncAgent()
     // Housekeeping once the UI is up.
     setTimeout(() => {
       this.history.store.prune(180)
@@ -293,9 +363,22 @@ export class Browser {
     view.setBackgroundColor('#00000000')
     const visible = this.pendingSurfaces.get(id) ?? false
     this.pendingSurfaces.delete(id)
-    window.addSurface(id, { view, visible, place: (card) => surfaceBounds(id, card) })
+    const place =
+      id === 'autofill'
+        ? (card: Rect) => this.passwords.place(card)
+        : id === 'sitePanel'
+          ? () => this.sitePanelBounds
+          : (card: Rect) => surfaceBounds(id, card)
+    window.addSurface(id, { view, visible, place, topmost: id === 'sitePanel' })
+    if (id === 'sitePanel') {
+      // A press anywhere else takes the focus: the panel closes, like a menu.
+      // (Hiding it moves the focus too, but it is no longer visible then.)
+      view.webContents.on('blur', () => {
+        if (window.getSurface('sitePanel')?.visible) this.shell.command({ type: 'sitePanel.dismiss' })
+      })
+    }
     view.webContents.on('before-input-event', (event, input) => this.handleReservedKeys(event, input))
-    if (visible) setImmediate(() => view.webContents.focus())
+    if (visible && SURFACES[id].takesFocus) setImmediate(() => view.webContents.focus())
     return view.webContents
   }
 
@@ -316,6 +399,7 @@ export class Browser {
       extensionPartition: this.extensions.partition,
       downloads: this.downloads.list(),
       permissionPrompts: this.permissions.prompts(),
+      pageDialogs: this.dialogs.list(),
       find: null,
       isDev
     }
@@ -348,6 +432,7 @@ export class Browser {
       profileSession: () => this.profiles.defaultSession(),
       profilePartition: () => this.profiles.get(DEFAULT_PROFILE_ID).partition,
       userData: () => app.getPath('userData'),
+      passwordStore: () => this.passwords.store,
       relaunch: () => {
         app.relaunch()
         app.quit()
@@ -424,6 +509,11 @@ export class Browser {
     window.win.setWindowButtonVisibility(!this.windowState.sidebarCollapsed || window.isOverlayOpen)
   }
 
+  placeSitePanel(bounds: Rect): void {
+    this.sitePanelBounds = bounds
+    this.window?.repositionSurface('sitePanel')
+  }
+
   setSurfaceVisible(id: SurfaceId, visible: boolean): void {
     const window = this.window
     if (!window) return
@@ -431,9 +521,18 @@ export class Browser {
       this.pendingSurfaces.set(id, visible)
       return
     }
+    const surface = window.getSurface(id)
+    // A click on a surface that does not take focus still moves the keyboard
+    // there; when it goes, the keyboard goes back to the page. Only once the
+    // view is gone: removing a view that still has focus clears it again.
+    const hadFocus = !visible && (surface?.view.webContents.isFocused() ?? false)
     window.setSurfaceVisible(id, visible)
-    if (visible) window.getSurface(id)?.view.webContents.focus()
-    else window.focusPage()
+    if (SURFACES[id].takesFocus) {
+      if (visible) surface?.view.webContents.focus()
+      else window.focusPage()
+    } else if (hadFocus) {
+      window.focusPage()
+    }
   }
 
   private patchWindow(patch: Partial<WindowState>): void {
@@ -449,8 +548,13 @@ export class Browser {
     const window = this.window
     const tabs = this.tabs
     const active = tabs.model.activeTab()
-    if (window && !window.win.isVisible() && id !== 'window.close') this.showWindow()
+    const wasHidden = window !== null && !window.win.isVisible()
+    if (wasHidden && id !== 'window.close') this.showWindow()
     switch (id) {
+      case 'edit.undo':
+        return void this.undo(wasHidden)
+      case 'page.print':
+        return active && tabs.print(active.id)
       case 'tab.new':
         return this.openPalette('new-tab')
       case 'address.focus':
@@ -542,6 +646,7 @@ export class Browser {
   }
 
   handleReservedKeys(event: Electron.Event, input: Electron.Input): void {
+    if (isTyping(input)) this.lastTypedAt = Date.now()
     const command = reservedCommandFor(input)
     if (command) {
       event.preventDefault()
@@ -558,6 +663,8 @@ export class Browser {
   private wireDelegates(): void {
     this.tabs.setDelegate({
       contextMenu: (tab, wc, params) => {
+        // An agent's right-click: a native menu would stall everything until someone closes it.
+        if (this.agent?.ownsContextMenu(wc)) return
         const settings = this.settings.get()
         showPageContextMenu(wc, params, {
           t: this.t,
@@ -586,9 +693,18 @@ export class Browser {
           : await dialog.showMessageBox(options)
         return res.response === 0
       },
-      runtimeCreated: (_tab, wc) => this.extensions.tabCreated(wc),
+      runtimeCreated: (tab, wc) => {
+        this.dialogs.attach(wc)
+        this.extensions.tabCreated(wc)
+        this.agent?.runtimeCreated(tab.id, wc)
+      },
+      tabRemoved: (tabId) => {
+        this.dialogs.dismissTab(tabId)
+        this.agent?.tabRemoved(tabId)
+      },
       runtimeDestroyed: () => undefined,
       activeChanged: (wc) => {
+        this.dialogs.dismissHidden()
         this.extensions.tabSelected(wc)
         if (this.window?.getSurface('find')?.visible) this.shell.command({ type: 'find.close' })
       },
@@ -736,6 +852,91 @@ export class Browser {
     if (window && !window.destroyed) this.revealWindow(window)
   }
 
+  /** ⌘Z: see `shortcuts/undo.ts`. */
+  private async undo(windowWasHidden: boolean): Promise<void> {
+    const focused = webContents.getFocusedWebContents()
+    const tabs = this.tabs
+    const action = decideUndo({
+      windowWasHidden,
+      windowIsKey: this.window?.win.isFocused() ?? false,
+      hasFocusedContents: focused !== null && !focused.isDestroyed(),
+      closedSinceTyping: tabs.lastClosedAt > this.lastTypedAt,
+      canReopen: tabs.canReopen()
+    })
+    switch (action) {
+      case 'native':
+        return Menu.sendActionToFirstResponder('undo:')
+      case 'reopen':
+        return tabs.reopenClosedTab()
+      case 'probe':
+        if (focused && (await isEditingText(focused))) return focused.undo()
+        return tabs.reopenClosedTab()
+      case 'text':
+        return focused?.undo()
+      case 'none':
+        return
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Agents (MCP)
+  // ---------------------------------------------------------------------------
+
+  /** Start, restart or stop the agent server to match the settings. */
+  private syncAgent(): void {
+    this.agentSync = this.agentSync.then(async () => {
+      const { agentEnabled, agentPort } = this.settings.get()
+      if (!agentEnabled || this.quitting) {
+        await this.agent?.stop()
+        return
+      }
+      if (!this.agentToken) this.setAgentToken(newAgentToken())
+      if (!this.agent) {
+        const { AgentService } = await import('../agent/agent-service')
+        this.agent = new AgentService({
+          tabs: this.tabs,
+          history: this.history,
+          dialogs: this.dialogs,
+          window: () => this.window,
+          token: () => this.agentToken,
+          t: (key, params) => this.t(key, params)
+        })
+      }
+      await this.agent.start(agentPort)
+    }).catch((error: unknown) => console.error('[agent]', error))
+  }
+
+  async agentInfo(): Promise<AgentInfo> {
+    await this.agentSync
+    const { agentEnabled, agentPort } = this.settings.get()
+    return (
+      this.agent?.info(agentEnabled, agentPort) ?? {
+        enabled: agentEnabled,
+        running: false,
+        port: agentPort,
+        url: agentUrl(agentPort),
+        token: this.agentToken,
+        error: null,
+        clients: []
+      }
+    )
+  }
+
+  copyAgentSnippet(what: AgentSnippet): void {
+    if (!this.agentToken) this.setAgentToken(newAgentToken())
+    clipboard.writeText(agentSnippet(what, agentUrl(this.settings.get().agentPort), this.agentToken))
+  }
+
+  regenerateAgentToken(): Promise<AgentInfo> {
+    this.setAgentToken(newAgentToken())
+    return this.agentInfo()
+  }
+
+  private setAgentToken(token: string): void {
+    this.agentToken = token
+    this.persister.setSetting(AGENT_TOKEN_KEY, token)
+  }
+
   // ---------------------------------------------------------------------------
   // Security & lifecycle
   // ---------------------------------------------------------------------------
@@ -761,6 +962,7 @@ export class Browser {
     if (this.quitting) return
     this.quitting = true
     this.discarder.stop()
+    void this.agent?.close()
     this.extensions.shutdown()
     this.tabs.snapshotAll()
     // From here on, WebContents being torn down must not touch the model.
@@ -786,6 +988,10 @@ export class Browser {
   get isQuitting(): boolean {
     return this.quitting
   }
+}
+
+function newAgentToken(): string {
+  return randomBytes(24).toString('base64url')
 }
 
 /** The shell's own session never needs downloads or web permissions. */

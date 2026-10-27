@@ -1,4 +1,4 @@
-import { net, protocol, session } from 'electron'
+import { net, protocol, session, type Session } from 'electron'
 import { extname, join, normalize, relative, sep } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import type { FaviconCache } from '../history/favicon-cache'
@@ -56,10 +56,13 @@ const SHELL_CSP = [
  * action icons. All three must be registered before the shell loads: Chromium
  * binds custom-scheme loaders when a frame is created, so a handler added
  * later (e.g. by the lazily imported extensions library) never reaches it.
+ * A favicon missing from the cache (a history page's site icon) is fetched
+ * once through `iconSession`; the shell itself never touches the network.
  */
 export function handleAppProtocols(
   favicons: FaviconCache,
-  extensionIcon: (request: Request) => Response | Promise<Response>
+  extensionIcon: (request: Request) => Response | Promise<Response>,
+  iconSession: () => Session
 ): void {
   const root = outPath('renderer')
   const ses = session.defaultSession
@@ -85,9 +88,11 @@ export function handleAppProtocols(
 
   ses.protocol.handle('crx', extensionIcon)
 
-  ses.protocol.handle(FAVICON_SCHEME, (request) => {
+  ses.protocol.handle(FAVICON_SCHEME, async (request) => {
     const target = new URL(request.url).searchParams.get('u')
-    const icon = target ? favicons.get(target) : null
+    if (!target) return new Response(null, { status: 404 })
+    let icon = favicons.get(target)
+    if (!icon && (await favicons.ensure(target, iconSession()))) icon = favicons.get(target)
     if (!icon) return new Response(null, { status: 404 })
     return new Response(new Uint8Array(icon.data), {
       headers: {

@@ -2,6 +2,7 @@ import { lazy, Suspense } from 'react'
 import { LAYOUT } from '@shared/layout'
 import { parseInternalUrl, tabPresentsView } from '@shared/url'
 import { selectActiveSpace, selectActiveTab, useBrowser } from '../../stores/browser'
+import { PageDialogSheet } from './PageDialogSheet'
 import { CrashPage, EmptyState, ErrorPage } from './StatusPages'
 
 // Internal pages are split out: they are rarely open and stay off the boot path.
@@ -9,6 +10,7 @@ const SettingsPage = lazy(() => import('./SettingsPage'))
 const ExtensionsPage = lazy(() => import('./ExtensionsPage'))
 const HistoryPage = lazy(() => import('./HistoryPage'))
 const DownloadsPage = lazy(() => import('./DownloadsPage'))
+const PasswordsPage = lazy(() => import('../passwords/PasswordsPage'))
 
 /**
  * The page card. Its huge box-shadow paints the window chrome everywhere
@@ -36,6 +38,7 @@ export function ContentArea({ left }: { left: string }) {
         {page === 'extensions' && <ExtensionsPage />}
         {page === 'history' && <HistoryPage />}
         {page === 'downloads' && <DownloadsPage />}
+        {page === 'passwords' && <PasswordsPage />}
       </Suspense>
     )
   }
@@ -53,6 +56,7 @@ export function ContentArea({ left }: { left: string }) {
       }}
     >
       {content && <div className="absolute inset-0 bg-[var(--surface)]">{content}</div>}
+      <PageDialogSheet />
     </div>
   )
 }

@@ -1,5 +1,6 @@
 import type { FolderId, ShellCommand } from '@shared/types'
-import { optimisticFolder, useBrowser } from '../stores/browser'
+import { dismissSitePanel } from '../features/sidebar/SitePanel'
+import { optimisticFolder, selectActiveDialog, useBrowser } from '../stores/browser'
 import { toast, useUi } from '../stores/ui'
 import { send } from './rpc'
 
@@ -28,6 +29,15 @@ export function handleCommand(cmd: ShellCommand): void {
     case 'toast':
       toast(cmd.message)
       break
+    case 'autofill':
+      useUi.setState({ autofill: cmd.entries ? { entries: cmd.entries, active: cmd.active, above: cmd.above } : null })
+      break
+    case 'password.offerSave':
+      useUi.setState({ passwordPrompt: { origin: cmd.origin, username: cmd.username } })
+      break
+    case 'sitePanel.dismiss':
+      dismissSitePanel()
+      break
   }
 }
 
@@ -47,22 +57,29 @@ function revealFolder(folderId: FolderId): void {
 
 /**
  * UI state → main process. The shell is raised above the page whenever a
- * modal overlay (palette, sidebar peek, the space editor and its theme panel) is showing.
+ * modal overlay (palette, sidebar peek, the space editor and its theme panel,
+ * a page's alert / confirm / prompt) is showing. The site controls float in
+ * a surface of their own instead: they never cover the page.
  */
 export function startUiEffects(): void {
   let overlay = false
+  const syncOverlay = () => {
+    const ui = useUi.getState()
+    const next = ui.palette !== null || ui.peek || ui.spaceEditor !== null || selectActiveDialog(useBrowser.getState()) !== null
+    if (next !== overlay) {
+      overlay = next
+      send('window.setOverlay', next)
+    }
+  }
   useUi.subscribe((s, prev) => {
     // The editor lives in the sidebar: with the sidebar collapsed, reveal it as a peek.
     if (s.spaceEditor !== null && prev.spaceEditor === null && !s.peek && useBrowser.getState().window.sidebarCollapsed) {
       useUi.setState({ peek: true })
       return
     }
-    const next = s.palette !== null || s.peek || s.spaceEditor !== null
-    if (next !== overlay) {
-      overlay = next
-      send('window.setOverlay', next)
-    }
+    syncOverlay()
   })
+  useBrowser.subscribe(syncOverlay)
   // A collapsed sidebar that gets expanded must drop any peek state.
   useBrowser.subscribe((s, prev) => {
     if (!s.window.sidebarCollapsed && prev.window.sidebarCollapsed && useUi.getState().peek) {

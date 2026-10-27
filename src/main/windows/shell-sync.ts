@@ -6,6 +6,7 @@ import type {
   FindState,
   FolderId,
   FolderState,
+  PageDialog,
   PermissionPrompt,
   Settings,
   ShellCommand,
@@ -73,6 +74,11 @@ export class ShellSync {
 
   permissionPrompts(list: PermissionPrompt[]): void {
     this.patch.permissionPrompts = [...list]
+    this.touch()
+  }
+
+  pageDialogs(list: PageDialog[]): void {
+    this.patch.pageDialogs = [...list]
     this.touch()
   }
 

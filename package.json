@@ -10,11 +10,11 @@
     "dev": "electron-vite dev",
     "build": "electron-vite build",
     "preview": "electron-vite preview",
-    "typecheck": "tsc -p tsconfig.node.json --noEmit && tsc -p tsconfig.web.json --noEmit && tsc -p tsconfig.test.json --noEmit",
+    "typecheck": "tsc -p tsconfig.node.json --noEmit && tsc -p tsconfig.preload.json --noEmit && tsc -p tsconfig.web.json --noEmit && tsc -p tsconfig.test.json --noEmit",
     "test": "vitest run",
     "test:e2e": "electron-vite build && playwright test",
     "check": "pnpm typecheck && pnpm test && pnpm build",
-    "dist": "electron-vite build && electron-builder --mac --arm64"
+    "dist": "electron-vite build && node scripts/dist.mjs"
   },
   "packageManager": "pnpm@9.11.0",
   "devDependencies": {

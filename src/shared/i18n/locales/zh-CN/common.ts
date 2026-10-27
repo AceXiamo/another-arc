@@ -14,6 +14,7 @@ const zh: Record<keyof typeof en, string> = {
   'page.extensions': '扩展',
   'page.history': '历史记录',
   'page.downloads': '下载',
+  'page.passwords': '密码',
 
   'tab.newTabTitle': '新标签页',
 

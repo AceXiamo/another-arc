@@ -37,7 +37,9 @@ export interface ImportHost {
   profileSession(): Session
   profilePartition(): string
   userData(): string
-  /** Restart the app, so a staged localStorage database can be swapped in. */
+  /** Where imported passwords go. */
+  passwordStore(): import('../passwords/password-store').PasswordStore
+  /** Restart the app, so staged site storage can be moved in. */
   relaunch(): void
 }
 
@@ -178,6 +180,7 @@ async function run(
     ...(extensions.length > 0
       ? [t('browserImport.all.extensions', { count: extensions.length, names: extensions.map((c) => c.name).join(', ') })]
       : []),
+    ...(session && session.passwords > 0 ? [t('passwords.import.count', { count: session.passwords })] : []),
     ...(session
       ? [
           t('browserImport.all.session', {
@@ -243,7 +246,8 @@ async function run(
       host.profileSession(),
       session,
       host.userData(),
-      partitionDirName(host.profilePartition())
+      partitionDirName(host.profilePartition()),
+      host.passwordStore()
     )
     restart = needsRestart(result)
     const { partitioned, sessionOnly, expired, undecryptable, malformed } = result.skipped
@@ -267,7 +271,8 @@ async function run(
                       sites: indexedDbOrigins
                     })
                   ]
-                : [])
+                : []),
+              ...passwordLines(result, t)
             ])
     )
   }
@@ -290,6 +295,19 @@ async function run(
     })
     if (restart === 0) host.relaunch()
   }
+}
+
+/** What came of the saved passwords, and what could not. */
+function passwordLines(result: Awaited<ReturnType<typeof importSession>>, t: Translate): string[] {
+  const { imported, skipped } = result.passwords
+  if (imported === 0 && skipped.inKeychain === 0) return []
+  return [
+    t('passwords.import.result', {
+      count: imported,
+      skipped: skipped.android + skipped.blacklisted + skipped.undecryptable
+    }),
+    ...(skipped.inKeychain > 0 ? [t('passwords.import.inKeychain', { count: skipped.inKeychain })] : [])
+  ]
 }
 
 /** Dialog-sized number: whole megabytes, and never a bare "0". */

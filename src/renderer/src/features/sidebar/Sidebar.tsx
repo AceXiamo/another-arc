@@ -1,5 +1,4 @@
 import { useRef } from 'react'
-import { ExtensionActions } from '../extensions/ExtensionActions'
 import { send } from '../../lib/rpc'
 import { useBrowser } from '../../stores/browser'
 import { useUi } from '../../stores/ui'
@@ -44,8 +43,9 @@ export function Sidebar({ floating = false }: { floating?: boolean }) {
       onPointerLeave={
         floating
           ? () => {
-              // The theme panel floats beside the sidebar; reaching it must not end the peek.
-              if (!useUi.getState().spaceEditor) useUi.setState({ peek: false })
+              // The theme panel and the site controls float beside the sidebar; reaching them must not end the peek.
+              const ui = useUi.getState()
+              if (!ui.spaceEditor && !ui.sitePanel) useUi.setState({ peek: false })
             }
           : undefined
       }
@@ -57,7 +57,6 @@ export function Sidebar({ floating = false }: { floating?: boolean }) {
       <SidebarHeader />
       <div className="no-drag flex flex-col gap-2 px-2 pb-2">
         <AddressPill />
-        <ExtensionActions />
         <PermissionPrompts />
       </div>
       <TabSections />

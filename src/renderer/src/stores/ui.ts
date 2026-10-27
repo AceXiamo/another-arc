@@ -1,4 +1,5 @@
 import { create } from 'zustand'
+import type { AutofillEntry } from '@shared/passwords'
 import type { FolderId, SpaceId, TabId } from '@shared/types'
 
 export type PaletteMode = 'new-tab' | 'edit-url'
@@ -51,6 +52,12 @@ interface UiState {
   peek: boolean
   drag: DragState | null
   toasts: Toast[]
+  /** Logins offered over the focused sign-in field, the row picked by keyboard, and its side; null when closed. */
+  autofill: { entries: AutofillEntry[]; active: number; above: boolean } | null
+  /** A sign-in that just went through, waiting to be saved or waved off. */
+  passwordPrompt: { origin: string; username: string } | null
+  /** Site controls popover, hanging from the address pill button at this point (window coordinates). */
+  sitePanel: { x: number; y: number } | null
 }
 
 export const useUi = create<UiState>()(() => ({
@@ -61,7 +68,10 @@ export const useUi = create<UiState>()(() => ({
   renamingFolder: null,
   peek: false,
   drag: null,
-  toasts: []
+  toasts: [],
+  autofill: null,
+  passwordPrompt: null,
+  sitePanel: null
 }))
 
 let toastSeq = 0

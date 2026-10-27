@@ -1,5 +1,6 @@
-import { dialog, Menu, nativeImage, type MenuItemConstructorOptions } from 'electron'
+import { app, clipboard, ClipboardItem, dialog, Menu, nativeImage, ShareMenu, systemPreferences, type MenuItemConstructorOptions } from 'electron'
 import { isSpaceIconId } from '@shared/defaults'
+import { AGENT_SNIPPETS } from '@shared/agent'
 import { IMPORT_BROWSERS } from '@shared/ext-import'
 import type { Translate } from '@shared/i18n'
 import { outPath } from '../app/environment'
@@ -9,7 +10,7 @@ import { isSavedTab } from '@shared/tabs'
 import { SPACE_APPEARANCES, THEME_LIMITS } from '@shared/theme'
 import { summarizeSidebar } from '../import/arc-sidebar'
 import { importArcSidebarWithDialogs, loadArcSidebar } from '../import/sidebar-import'
-import { INTERNAL_PAGES, SEARCH_ENGINES, type InternalPage } from '@shared/url'
+import { INTERNAL_PAGES, isInternalUrl, SEARCH_ENGINES, type InternalPage } from '@shared/url'
 import type { SearchEngineId } from '@shared/types'
 import type { Browser } from '../app/browser'
 import type { RpcRouter } from './router'
@@ -115,8 +116,47 @@ export function registerHandlers(router: RpcRouter, b: Browser): void {
   router.handle('tabs.setMuted', tuple(id, v.boolean()), (_c, tabId, muted) => tabs.setMuted(tabId, muted))
   router.handle('tabs.reopenClosed', tuple(), () => tabs.reopenClosedTab())
   router.handle('tabs.copyUrl', tuple(id), (_c, tabId) => tabs.copyUrl(tabId))
+  router.handle('tabs.share', tuple(id, point), (_c, tabId, at) => {
+    const tab = tabs.model.getTab(tabId)
+    if (!tab || isInternalUrl(tab.url)) return
+    const window = b.window?.win
+    new ShareMenu({ urls: [tab.url] }).popup({ ...(window ? { window } : {}), x: Math.round(at.x), y: Math.round(at.y) })
+  })
+  router.handle('tabs.copyScreenshot', tuple(id), async (_c, tabId) => {
+    const wc = tabs.runtime(tabId)?.wc
+    if (!wc || wc.isDestroyed()) return false
+    const png = (await wc.capturePage()).toPNG()
+    await clipboard.write([new ClipboardItem({ 'image/png': new Blob([new Uint8Array(png)], { type: 'image/png' }) })])
+    return true
+  })
+  router.handle('tabs.siteMenu', tuple(id, point), (_c, tabId, at) => {
+    const tab = tabs.model.getTab(tabId)
+    if (!tab) return
+    const live = tabs.runtime(tabId) !== undefined
+    popupAt(
+      [
+        { label: t('siteMenu.copyUrl'), enabled: !isInternalUrl(tab.url), click: () => tabs.copyUrl(tabId) },
+        { label: t('siteMenu.print'), enabled: live, click: () => tabs.print(tabId) },
+        { label: t('siteMenu.devtools'), enabled: live, click: () => tabs.toggleDevTools(tabId) },
+        { type: 'separator' },
+        { label: t('siteMenu.siteSettings'), click: () => b.openInternal('settings') }
+      ],
+      at
+    )
+  })
   router.handle('tabs.allowCertificate', tuple(id), (_c, tabId) => b.allowCertificate(tabId))
   router.handle('tabs.openInternal', tuple(internalPage), (_c, page) => b.openInternal(page))
+
+  // -- default browser ----------------------------------------------------------
+  const isDefaultBrowser = () => app.isDefaultProtocolClient('http') && app.isDefaultProtocolClient('https')
+  router.handle('defaultBrowser.get', tuple(), isDefaultBrowser)
+  router.handle('defaultBrowser.set', tuple(), () => {
+    // macOS asks the user to confirm ("Use Another Arc or keep …?") and only
+    // then switches, so the answer here may still be false; the page asks again.
+    app.setAsDefaultProtocolClient('http')
+    app.setAsDefaultProtocolClient('https')
+    return isDefaultBrowser()
+  })
   router.handle('tabs.contextMenu', tuple(id, point), (_c, tabId, at) => {
     const tab = tabs.model.getTab(tabId)
     if (!tab) return
@@ -333,6 +373,18 @@ export function registerHandlers(router: RpcRouter, b: Browser): void {
     phase === 'start' ? b.window?.beginDrag() : b.window?.endDrag()
   )
   router.handle('window.titleBarDoubleClick', tuple(), () => b.window?.titleBarDoubleClick())
+  router.handle(
+    'sitePanel.place',
+    tuple(
+      v.object({
+        x: v.number({ min: -10_000, max: 100_000 }),
+        y: v.number({ min: -10_000, max: 100_000 }),
+        width: v.number({ min: 1, max: 2000 }),
+        height: v.number({ min: 1, max: 4000 })
+      })
+    ),
+    (_c, bounds) => b.placeSitePanel(bounds)
+  )
   router.handle('surface.setVisible', tuple(surfaceId, v.boolean()), (_c, surface, visible) =>
     b.setSurfaceVisible(surface, visible)
   )
@@ -449,6 +501,36 @@ export function registerHandlers(router: RpcRouter, b: Browser): void {
     )
   })
 
+  // -- saved logins -----------------------------------------------------------
+  const pw = b.passwords
+  router.handle('passwords.list', tuple(), () => pw.store.list())
+  router.handle('passwords.available', tuple(), () => pw.store.available)
+  router.handle('passwords.fill', tuple(v.id()), (_c, id) => pw.fill(id))
+  router.handle('passwords.dismiss', tuple(), () => pw.close())
+  router.handle('passwords.manage', tuple(), () => {
+    pw.close()
+    b.openInternal('passwords')
+  })
+  router.handle('passwords.resolveSave', tuple(v.boolean()), (_c, accept) => pw.resolveSave(accept))
+  router.handle('passwords.remove', tuple(v.id()), (_c, id) => pw.store.remove(id))
+  router.handle('passwords.copy', tuple(v.id()), (_c, id) => {
+    const password = pw.store.password(id)
+    if (password === null) return false
+    clipboard.writeText(password)
+    return true
+  })
+  router.handle('passwords.reveal', tuple(v.id()), async (_c, id) => {
+    // The one place a saved password reaches the shell, and only after the
+    // Mac has confirmed who is sitting at it.
+    if (!systemPreferences.canPromptTouchID()) return null
+    try {
+      await systemPreferences.promptTouchID(t('passwords.save.reason'))
+    } catch {
+      return null
+    }
+    return pw.store.password(id)
+  })
+
   // -- downloads --------------------------------------------------------------
   const dl = b.downloads
   router.handle('downloads.open', tuple(id), (_c, d) => dl.open(d))
@@ -474,7 +556,24 @@ export function registerHandlers(router: RpcRouter, b: Browser): void {
     (_c, promptId, decision, remember) => b.permissions.respond(promptId, decision, remember)
   )
   router.handle('permissions.list', tuple(), () => b.permissions.list())
+
+  // -- page dialogs (alert / confirm / prompt) -----------------------------------
+  router.handle(
+    'pageDialogs.respond',
+    tuple(id, v.boolean(), v.string({ max: 100_000 }), v.boolean()),
+    (_c, dialogId, accept, text, suppress) => b.dialogs.respond(dialogId, accept, text, suppress)
+  )
+
+  // -- agents (MCP) -------------------------------------------------------------
+  router.handle('agent.info', tuple(), () => b.agentInfo())
+  router.handle('agent.copy', tuple(v.oneOf(AGENT_SNIPPETS)), (_c, what) => b.copyAgentSnippet(what))
+  router.handle('agent.regenerateToken', tuple(), () => b.regenerateAgentToken())
   router.handle('permissions.reset', tuple(v.string({ max: 2048 }), v.string({ max: 64 })), (_c, origin, permission) =>
     b.permissions.reset(origin, permission)
+  )
+  router.handle(
+    'permissions.set',
+    tuple(v.string({ max: 2048 }), v.string({ max: 64 }), v.oneOf(['allow', 'deny'] as const)),
+    (_c, origin, permission, decision) => b.permissions.set(origin, permission, decision)
   )
 }

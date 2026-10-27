@@ -4,6 +4,7 @@ import { isSavedTab } from '@shared/tabs'
 import { fallbackTitle } from '@shared/url'
 import { Favicon } from '../../components/Favicon'
 import { Icon } from '../../components/Icon'
+import { AgentDot } from '../agent/AgentRing'
 import { useLocale, useT } from '../../lib/i18n'
 import { send } from '../../lib/rpc'
 import { useBrowser } from '../../stores/browser'
@@ -82,15 +83,18 @@ export const TabItem = memo(function TabItem({ id, index, tree }: { id: string; 
       style={{ paddingLeft: inset }}
     >
       {before && <DropLine inset={inset - 2} />}
-      {tab.loading ? (
-        <span className="grid h-4 w-4 shrink-0 place-items-center">
-          <span className="spinner" />
-        </span>
-      ) : (
-        <span className={`flex shrink-0 ${asleep ? 'opacity-55' : ''}`}>
-          <Favicon url={tab.url || tab.savedUrl} favicon={tab.favicon} title={title} />
-        </span>
-      )}
+      <span className="relative flex shrink-0">
+        {tab.loading ? (
+          <span className="grid h-4 w-4 place-items-center">
+            <span className="spinner" />
+          </span>
+        ) : (
+          <span className={`flex ${asleep ? 'opacity-55' : ''}`}>
+            <Favicon url={tab.url || tab.savedUrl} favicon={tab.favicon} title={title} />
+          </span>
+        )}
+        {tab.agent && <AgentDot />}
+      </span>
       <span
         className={`min-w-0 flex-1 truncate ${
           active
@@ -147,8 +151,9 @@ export const PinnedTile = memo(function PinnedTile({ id, index }: { id: string; 
       {tab.loading ? (
         <span className="spinner" />
       ) : (
-        <span className={`flex ${asleep ? 'opacity-55' : ''}`}>
+        <span className={`relative flex ${asleep ? 'opacity-55' : ''}`}>
           <Favicon url={tab.url} favicon={tab.favicon} title={tab.title} size={18} />
+          {tab.agent && <AgentDot />}
         </span>
       )}
       {(tab.audible || tab.muted) && (

@@ -40,6 +40,16 @@ function escapeLike(term: string): string {
   return term.replace(/[\\%_]/g, (c) => `\\${c}`)
 }
 
+/** Origin of an http(s) page; other schemes have no site icon to borrow. */
+function webOrigin(url: string): string | null {
+  if (!url.startsWith('https://') && !url.startsWith('http://')) return null
+  try {
+    return new URL(url).origin
+  } catch {
+    return null
+  }
+}
+
 export class HistoryStore {
   constructor(private readonly db: Database) {}
 
@@ -69,6 +79,11 @@ export class HistoryStore {
     this.db.run('UPDATE history_urls SET title = ? WHERE url = ? AND title <> ?', title, url, title)
   }
 
+  updateFavicon(url: string, favicon: string): void {
+    if (!favicon || !isRecordableUrl(url)) return
+    this.db.run('UPDATE history_urls SET favicon = ? WHERE url = ? AND favicon IS NOT ?', favicon, url, favicon)
+  }
+
   suggest(query: string, limit: number, now = Date.now()): Suggestion[] {
     const q = query.trim()
     if (!q) return []
@@ -83,29 +98,31 @@ export class HistoryStore {
     let sql: string
     if (fts.length > 0) {
       params.match = ftsQuery(fts)
-      sql = `SELECT h.url AS url, h.title AS title, ${SCORE_SQL} AS score
+      sql = `SELECT h.url AS url, h.title AS title, h.favicon AS favicon, ${SCORE_SQL} AS score
              FROM history_fts JOIN history_urls h ON h.id = history_fts.rowid
              WHERE history_fts MATCH :match ${shortFilters.join(' ')}
              ORDER BY score DESC LIMIT :limit`
     } else {
-      sql = `SELECT h.url AS url, h.title AS title, ${SCORE_SQL} AS score
+      sql = `SELECT h.url AS url, h.title AS title, h.favicon AS favicon, ${SCORE_SQL} AS score
              FROM (SELECT * FROM history_urls ORDER BY last_visit_at DESC LIMIT ${SHORT_QUERY_WINDOW}) h
              WHERE 1 ${shortFilters.join(' ')}
              ORDER BY score DESC LIMIT :limit`
     }
-    const rows = this.db.stmt(sql).all(params) as Array<{ url: string; title: string }>
-    return rows.map((r) => ({ kind: 'history', url: r.url, title: r.title }))
+    const rows = this.db.stmt(sql).all(params) as Array<{ url: string; title: string; favicon: string | null }>
+    return this.withSiteIcons(rows).map((r) => ({ kind: 'history', url: r.url, title: r.title, favicon: r.favicon }))
   }
 
   list(query: string, before: number, limit: number): HistoryEntry[] {
     const q = query.trim()
     if (!q) {
-      return this.db.all<HistoryEntry>(
-        `SELECT v.id AS id, h.url AS url, h.title AS title, v.visited_at AS visitedAt
-         FROM visits v JOIN history_urls h ON h.id = v.url_id
-         WHERE v.visited_at < ? ORDER BY v.visited_at DESC LIMIT ?`,
-        before,
-        limit
+      return this.withSiteIcons(
+        this.db.all<HistoryEntry>(
+          `SELECT v.id AS id, h.url AS url, h.title AS title, v.visited_at AS visitedAt, h.favicon AS favicon
+           FROM visits v JOIN history_urls h ON h.id = v.url_id
+           WHERE v.visited_at < ? ORDER BY v.visited_at DESC LIMIT ?`,
+          before,
+          limit
+        )
       )
     }
     const { fts, short } = splitTerms(q)
@@ -119,12 +136,14 @@ export class HistoryStore {
       params[`s${i}`] = `%${escapeLike(t)}%`
       filters.push(`AND (h.url LIKE :s${i} ESCAPE '\\' OR h.title LIKE :s${i} ESCAPE '\\')`)
     })
-    return this.db.stmt(
-      `SELECT v.id AS id, h.url AS url, h.title AS title, v.visited_at AS visitedAt
-       FROM visits v JOIN history_urls h ON h.id = v.url_id
-       WHERE v.visited_at < :before ${filters.join(' ')}
-       ORDER BY v.visited_at DESC LIMIT :limit`
-    ).all(params) as unknown as HistoryEntry[]
+    return this.withSiteIcons(
+      this.db.stmt(
+        `SELECT v.id AS id, h.url AS url, h.title AS title, v.visited_at AS visitedAt, h.favicon AS favicon
+         FROM visits v JOIN history_urls h ON h.id = v.url_id
+         WHERE v.visited_at < :before ${filters.join(' ')}
+         ORDER BY v.visited_at DESC LIMIT :limit`
+      ).all(params) as unknown as HistoryEntry[]
+    )
   }
 
   deleteVisits(ids: number[]): void {
@@ -148,6 +167,34 @@ export class HistoryStore {
       this.db.run('DELETE FROM visits WHERE visited_at < ?', now - maxAgeDays * DAY)
       this.removeOrphans()
     })
+  }
+
+  /**
+   * Pages that never reported an icon (visited before icons were recorded, or
+   * left before theirs loaded) borrow one from another page of the same site,
+   * else get the site's `/favicon.ico`, which the shell's favicon protocol
+   * fetches on first display.
+   */
+  private withSiteIcons<T extends { url: string; favicon: string | null }>(rows: T[]): T[] {
+    const bySite = new Map<string, string>()
+    for (const row of rows) {
+      if (row.favicon) continue
+      const origin = webOrigin(row.url)
+      if (!origin) continue
+      let icon = bySite.get(origin)
+      if (icon === undefined) {
+        // A range on the url index covers exactly this origin's pages.
+        icon =
+          this.db.get<{ favicon: string }>(
+            'SELECT favicon FROM history_urls WHERE url >= ? AND url < ? AND favicon IS NOT NULL LIMIT 1',
+            `${origin}/`,
+            `${origin}0`
+          )?.favicon ?? `${origin}/favicon.ico`
+        bySite.set(origin, icon)
+      }
+      row.favicon = icon
+    }
+    return rows
   }
 
   private removeOrphans(): void {

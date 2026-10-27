@@ -1,133 +1,108 @@
 import { memo, useEffect, useMemo, useState } from 'react'
+import { create } from 'zustand'
 import type { ActionState, ExtensionAction } from '../../../../preload/api'
 import { Icon } from '../../components/Icon'
 import { useT } from '../../lib/i18n'
 import { send } from '../../lib/rpc'
 import { selectActiveTab, useBrowser } from '../../stores/browser'
 
-/**
- * Pinned extension action buttons. State comes from electron-chrome-extensions'
- * browserAction API through the preload bridge; we render our own buttons so
- * pinning, ordering and styling stay under the shell's control. A click opens
- * the extension's popup or side panel in its own window (main routes it); a
- * second click closes that window.
- */
-export function ExtensionActions() {
-  const partition = useBrowser((s) => s.extensionPartition)
-  const extensions = useBrowser((s) => s.extensions)
-  const activeTabId = useBrowser((s) => selectActiveTab(s)?.id)
-  const pinned = useMemo(
-    () => extensions.filter((e) => e.enabled && e.pinned && e.hasAction).map((e) => e.id),
-    [extensions]
-  )
-  const open = useMemo(() => new Set(extensions.filter((e) => e.windowOpen).map((e) => e.id)), [extensions])
-  const [state, setState] = useState<ActionState | null>(null)
-  const wanted = pinned.length > 0
+/** Pinned actions that fit in the address pill; the rest stay in the site controls. */
+export const MAX_PINNED_ACTIONS = 3
 
-  // Observe once while any pinned action exists…
-  useEffect(() => {
-    if (!wanted || !partition) return
-    let alive = true
-    const refresh = () =>
-      window.arc.actions
-        .invoke(partition, 'browserAction.getState')
-        .then((s) => alive && setState(s as ActionState))
-        .catch(() => undefined)
+/**
+ * Extension action state from electron-chrome-extensions' browserAction API,
+ * through the preload bridge. We render our own buttons so pinning, ordering
+ * and styling stay under the shell's control. One observer is shared by every
+ * component that needs it (the pill and the site controls): main tracks
+ * observers per webContents, so a second add/remove pair would cut off both.
+ */
+const useActionStore = create<{ state: ActionState | null }>(() => ({ state: null }))
+let observers = 0
+let stopObserving: (() => void) | null = null
+
+function refreshActions(): void {
+  const partition = useBrowser.getState().extensionPartition
+  if (!partition || observers === 0) return
+  window.arc.actions
+    .invoke(partition, 'browserAction.getState')
+    .then((s) => observers > 0 && useActionStore.setState({ state: s as ActionState }))
+    .catch(() => undefined)
+}
+
+function observeActions(partition: string): () => void {
+  if (observers++ === 0) {
     void window.arc.actions.invoke(partition, 'browserAction.addObserver').catch(() => undefined)
-    const off = window.arc.actions.onUpdate(refresh)
-    return () => {
-      alive = false
+    const off = window.arc.actions.onUpdate(refreshActions)
+    stopObserving = () => {
       off()
       void window.arc.actions.invoke(partition, 'browserAction.removeObserver').catch(() => undefined)
     }
-  }, [wanted, partition])
-
-  // …and re-read per-tab badges/icons when the active tab or the set changes.
-  useEffect(() => {
-    if (!wanted || !partition) return
-    let alive = true
-    window.arc.actions
-      .invoke(partition, 'browserAction.getState')
-      .then((s) => alive && setState(s as ActionState))
-      .catch(() => undefined)
-    return () => {
-      alive = false
-    }
-  }, [wanted, partition, activeTabId, extensions])
-
-  if (!wanted || !state) return null
-  const actions = pinned
-    .map((id) => state.actions.find((a) => a.id === id))
-    .filter((a): a is ExtensionAction => a !== undefined)
-  if (actions.length === 0) return null
-  return (
-    <div className="flex flex-wrap gap-0.5">
-      {actions.map((a) => (
-        <ActionButton
-          key={a.id}
-          action={a}
-          tabId={state.activeTabId ?? -1}
-          partition={partition}
-          windowOpen={open.has(a.id)}
-        />
-      ))}
-    </div>
-  )
+  }
+  return () => {
+    if (--observers > 0) return
+    stopObserving?.()
+    stopObserving = null
+    useActionStore.setState({ state: null })
+  }
 }
 
-const ActionButton = memo(function ActionButton({
+/** Action state while `wanted`; re-read when the active tab or the extension set changes. */
+export function useActionState(wanted: boolean): ActionState | null {
+  const partition = useBrowser((s) => s.extensionPartition)
+  const extensions = useBrowser((s) => s.extensions)
+  const activeTabId = useBrowser((s) => selectActiveTab(s)?.id)
+  const state = useActionStore((s) => s.state)
+  useEffect(() => (wanted && partition ? observeActions(partition) : undefined), [wanted, partition])
+  useEffect(() => {
+    if (wanted) refreshActions()
+  }, [wanted, partition, activeTabId, extensions])
+  return wanted ? state : null
+}
+
+/**
+ * Open the extension's popup or side panel in its own window (main routes
+ * it), anchored to `anchor`. From the toolbar a second click closes it.
+ */
+export function activateAction(extensionId: string, tabId: number, anchor: DOMRect, eventType: string, toggle: boolean): void {
+  const partition = useBrowser.getState().extensionPartition
+  if (!partition) return
+  void window.arc.actions
+    .invoke(partition, 'browserAction.activate', {
+      eventType,
+      extensionId,
+      tabId,
+      alignment: 'bottom right',
+      anchorRect: { x: anchor.left, y: anchor.top, width: anchor.width, height: anchor.height },
+      toggle
+    })
+    .catch(() => undefined)
+}
+
+/** The action's current icon (per tab) with its badge; a neutral glyph if it cannot be served. */
+export const ActionIcon = memo(function ActionIcon({
   action,
   tabId,
-  partition,
-  windowOpen
+  size = 16
 }: {
   action: ExtensionAction
   tabId: number
-  partition: string
-  windowOpen: boolean
+  size?: number
 }) {
-  const t = useT()
+  const partition = useBrowser((s) => s.extensionPartition)
   const info = { ...action, ...(action.tabs[String(tabId)] ?? {}) }
   const params = new URLSearchParams({ tabId: String(tabId), partition })
   if (info.iconModified) params.set('t', String(info.iconModified))
   const icon = `crx://extension-icon/${action.id}/32/2?${params}`
-  // If the icon cannot be served, keep the <img> (it is the click target's
-  // identity) but show a neutral glyph instead of a broken-image marker.
+  // Keep the <img> even when it fails (it is the click target's identity),
+  // but show the glyph instead of a broken-image marker.
   const [broken, setBroken] = useState<string | null>(null)
   const failed = broken === icon
-
-  const activate = (e: React.MouseEvent<HTMLButtonElement>) => {
-    const r = e.currentTarget.getBoundingClientRect()
-    void window.arc.actions
-      .invoke(partition, 'browserAction.activate', {
-        eventType: e.type,
-        extensionId: action.id,
-        tabId,
-        alignment: 'bottom right',
-        anchorRect: { x: r.left, y: r.top, width: r.width, height: r.height },
-        // A toolbar click: closes the extension's window when it is open.
-        toggle: true
-      })
-      .catch(() => undefined)
-  }
-
   return (
-    <button
-      title={windowOpen ? t('extWindow.button.openTitle', { title: info.title ?? '' }) : (info.title ?? '')}
-      aria-pressed={windowOpen}
-      onClick={activate}
-      onContextMenu={(e) => {
-        e.preventDefault()
-        send('extensions.contextMenu', action.id, { x: e.clientX, y: e.clientY })
-      }}
-      className={`relative grid h-7 w-7 place-items-center rounded-[7px] active:bg-[var(--sb-press)] ${
-        windowOpen ? 'bg-[var(--sb-active)]' : 'hover:bg-[var(--sb-hover)]'
-      }`}
-    >
+    <span className="relative grid place-items-center" style={{ width: size, height: size }}>
       <img
         src={icon}
-        width={16}
-        height={16}
+        width={size}
+        height={size}
         alt=""
         draggable={false}
         onError={() => setBroken(icon)}
@@ -136,18 +111,53 @@ const ActionButton = memo(function ActionButton({
       {failed && (
         <Icon
           name="puzzle"
-          size={16}
+          size={size}
           className="pointer-events-none absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 text-[var(--ink)]"
         />
       )}
       {info.text && (
         <span
-          className="absolute -bottom-0.5 -right-0.5 min-w-3 rounded-[4px] px-[3px] text-center text-[9px] font-semibold leading-[12px] text-white shadow-[0_0_0_1px_var(--chrome)]"
+          className="absolute -bottom-1.5 -right-2 min-w-3 rounded-[4px] px-[3px] text-center text-[9px] font-semibold leading-[12px] text-white shadow-[0_0_0_1px_var(--chrome)]"
           style={{ background: info.color || '#555' }}
         >
           {info.text}
         </span>
       )}
-    </button>
+    </span>
   )
 })
+
+/** Pinned extension buttons inside the address pill. */
+export function PinnedActions() {
+  const t = useT()
+  const extensions = useBrowser((s) => s.extensions)
+  const pinned = useMemo(
+    () => extensions.filter((e) => e.enabled && e.pinned && e.hasAction).slice(0, MAX_PINNED_ACTIONS),
+    [extensions]
+  )
+  const state = useActionState(pinned.length > 0)
+  if (!state) return null
+  const tabId = state.activeTabId ?? -1
+  return pinned.map((ext) => {
+    const action = state.actions.find((a) => a.id === ext.id)
+    if (!action) return null
+    const title = action.tabs[String(tabId)]?.title ?? action.title ?? ext.name
+    return (
+      <button
+        key={ext.id}
+        title={ext.windowOpen ? t('extWindow.button.openTitle', { title }) : title}
+        aria-pressed={ext.windowOpen === true}
+        onClick={(e) => activateAction(ext.id, tabId, e.currentTarget.getBoundingClientRect(), e.type, true)}
+        onContextMenu={(e) => {
+          e.preventDefault()
+          send('extensions.contextMenu', ext.id, { x: e.clientX, y: e.clientY })
+        }}
+        className={`grid h-[26px] w-[26px] shrink-0 place-items-center rounded-[7px] active:bg-[var(--sb-press)] ${
+          ext.windowOpen ? 'bg-[var(--sb-active)]' : 'hover:bg-[var(--sb-hover)]'
+        }`}
+      >
+        <ActionIcon action={action} tabId={tabId} />
+      </button>
+    )
+  })
+}
