@@ -1,6 +1,5 @@
 import { LAYOUT } from '@shared/layout'
 import { Toasts } from './components/Toasts'
-import { AgentRing } from './features/agent/AgentRing'
 import { DownloadFlights } from './features/downloads/DownloadFlights'
 import { FindSurface } from './features/find/FindSurface'
 import { ContentArea } from './features/pages/ContentArea'
@@ -35,7 +34,6 @@ export function App() {
       <div className="contents" style={CARD_CHROME_OFF}>
         <ContentArea left={cardLeft} />
       </div>
-      <AgentRing left={cardLeft} />
       {collapsed ? (
         <PeekEdge />
       ) : (

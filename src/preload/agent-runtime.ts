@@ -1866,20 +1866,60 @@ globalThis.__arcAgentCreate = (start: number) => {
 
   // -- the glow around the page -----------------------------------------------
 
+  /** How strong the glow is on its way in from the page's edge: [alpha, px from the edge]. */
+  const GLOW: [number, number][] = [
+    [0.95, 0],
+    [0.7, 12],
+    [0.42, 32],
+    [0.2, 58],
+    [0.07, 84],
+    [0, 110]
+  ]
+
+  /**
+   * Strong at the page's edge and gone a little way in, like an inset shadow:
+   * a strip along each side and a quarter circle in each corner, so it rounds
+   * the corners instead of piling up in them. The pieces never overlap.
+   */
+  function glowMask(): Record<string, string> {
+    const reach = GLOW.at(-1)![1]
+    const alpha = (a: number) => `rgb(0 0 0 / ${a})`
+    const linear = (to: string) => `linear-gradient(to ${to}, ${GLOW.map(([a, d]) => `${alpha(a)} ${d}px`).join(', ')})`
+    // Centred on the corner piece's inner point, which is `reach` from both edges.
+    const radial = (at: string) =>
+      `radial-gradient(circle ${reach}px at ${at}, ${GLOW.toReversed().map(([a, d]) => `${alpha(a)} ${reach - d}px`).join(', ')})`
+    const strip = `calc(100% - ${2 * reach}px)`
+    const corner = `${reach}px ${reach}px`
+    const pieces = [
+      [linear('bottom'), `${strip} ${reach}px`, '50% 0'],
+      [linear('top'), `${strip} ${reach}px`, '50% 100%'],
+      [linear('right'), `${reach}px ${strip}`, '0 50%'],
+      [linear('left'), `${reach}px ${strip}`, '100% 50%'],
+      [radial('100% 100%'), corner, '0 0'],
+      [radial('0 100%'), corner, '100% 0'],
+      [radial('100% 0'), corner, '0 100%'],
+      [radial('0 0'), corner, '100% 100%']
+    ]
+    return {
+      'mask-image': pieces.map((p) => p[0]).join(', '),
+      'mask-size': pieces.map((p) => p[1]).join(', '),
+      'mask-position': pieces.map((p) => p[2]).join(', '),
+      'mask-repeat': 'no-repeat'
+    }
+  }
+
   function showAura(): void {
     if (overlay.aura || !overlay.root) return
     const aura = document.createElement('div')
     css(aura, { position: 'absolute', inset: '0', overflow: 'hidden' })
     // Under the highlights and the cursor.
     overlay.root.insertBefore(aura, overlay.root.firstChild)
-    const edges = (stops: string) => ['right', 'left', 'bottom', 'top'].map((side) => `linear-gradient(to ${side}, ${stops})`).join(', ')
-    // A wide bloom that breathes, and a crisp rim on the very edge; they turn at different speeds, so the colors shimmer.
-    const bloom = div(aura, { position: 'absolute', inset: '0', 'mask-image': edges('rgb(0 0 0 / 0.8) 0, rgb(0 0 0 / 0.32) 10px, rgb(0 0 0 / 0.08) 26px, transparent 44px') })
+    // A bloom that breathes inward from the edge; the page view's own rounded
+    // corners trim it, so nothing is drawn outside the page.
+    const bloom = div(aura, { position: 'absolute', inset: '0', ...glowMask() })
     rainbow(bloom, '150vmax', -11_000)
-    const rim = div(aura, { position: 'absolute', inset: '0', 'mask-image': edges('#000 0, #000 1.5px, transparent 3.5px') })
-    rainbow(rim, '150vmax', 7000)
     aura.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 700, easing: 'ease-out' })
-    if (!calm) bloom.animate([{ opacity: 1 }, { opacity: 0.4 }], { duration: 1600, direction: 'alternate', iterations: Infinity, easing: 'ease-in-out' })
+    if (!calm) bloom.animate([{ opacity: 1 }, { opacity: 0.6 }], { duration: 1600, direction: 'alternate', iterations: Infinity, easing: 'ease-in-out' })
     overlay.aura = aura
   }
 
