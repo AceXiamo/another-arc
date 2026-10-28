@@ -185,6 +185,7 @@ export class Browser {
       outPath('preload', 'extension-compat.cjs'),
       {
         tabs: this.tabs,
+        downloads: this.downloads,
         window: () => this.window,
         shell: this.shell,
         confirm: (message, detail) => this.confirm(message, detail),

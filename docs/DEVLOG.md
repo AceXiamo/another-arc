@@ -71,3 +71,14 @@ UI 打磨（配色 token、半透明图标、各页面与弹层细节）由一�
 - 开启 `acceptFirstMouse`（同 Chrome）：后台窗口第一次点击就能拖动、点到侧栏。
 - 测试：`title-bar.spec.ts` 用伪造的光标位置驱动 main，覆盖拖动、按钮不触发拖动、收起侧栏、双击三种系统设置。
 
+## 2026-10-29 · chrome.downloads
+
+- **问题**：Twitter 媒体下载脚本点了下载一直转圈。Tampermonkey 的下载模式默认是"默认"：只要 `chrome.downloads` 存在、`downloads` 权限已授予，就走浏览器 API。扩展库确实声明了 `chrome.downloads`，但所有方法都是空实现（`noop: true`）：`download()` 返回 undefined，不下载，也不发事件。Tampermonkey 因此报 `{ error: "unknown" }`；脚本的错误处理读 `details.current` 时自己抛错，下载队列就此卡死。
+- **实现**：兼容层在 SW 和扩展页面里原地替换 `chrome.downloads` 的成员（`chrome` 已被冻结，但这个命名空间对象没有）。方法有 `download`、`search`、`pause` / `resume` / `cancel`、`erase`、`removeFile`、`open`、`show`、`showDefaultFolder`、`getFileIcon`、`acceptDanger`、`setUiOptions`；事件有 `onCreated`、`onChanged`、`onErased`；还有各个枚举。Promise 和回调两种写法都支持，失败时回调里能读到 `runtime.lastError`。
+  - 下载统一交给 `DownloadManager`，会出现在下载列表和下载动画里。`filename` 可以带子目录，规则同 Chrome（不允许 `..`、绝对路径或非法字符）；`conflictAction` 和 `saveAs` 也都按 Chrome 的语义处理。不安全的请求头会被拒绝，与 XMLHttpRequest 相同。
+  - `data:`、`blob:` 和扩展自己的地址只有调用方能解析，由兼容层读成字节交给 main 写盘；POST 下载由 main 用 `session.fetch` 完成。
+  - 下载 id 是持久化的整数（数据库 v6 给 `downloads` 加了 `seq` 和 `initiator` 两列）。Tampermonkey 会把 id 存起来，重启后继续拿它查询。
+  - `onChanged` 只发差量，进度变化不发，与 Chrome 一致。下载结束时，如果发起下载的扩展 SW 没在运行，会先把它唤醒再投递。
+  - 权限按实际授予的来算：可选权限要申请并获准后才算。`downloads.open` 单独检查。
+- **测试**：新增 `downloads.test.ts`，覆盖校验、DownloadItem 映射、查询和排序、差量、权限，以及用假下载管理器跑通的事件链路。API 探针加了 5 项 downloads 检查（只在 `/probe?downloads` 时运行，下载目录指向临时目录）。`tampermonkey.spec.ts` 新增一个用例：真实 Tampermonkey 用 `GM_download` 把文件存进 `tmd/` 子目录，校验字节内容，并确认下载记录归在 Tampermonkey 名下。
+

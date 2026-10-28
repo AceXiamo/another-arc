@@ -32,7 +32,9 @@ import {
   type ImportCandidate,
   type ImportSource
 } from './browser-import'
+import type { DownloadManager } from '../downloads/download-manager'
 import { ExtensionCompat } from './compat'
+import { ExtensionDownloads } from './downloads'
 import { ExtensionWindows, type ExtensionSurface, type StoredPlacement } from './extension-window'
 import { ensureUserScriptsSupport, installCopy, readManifest, removeCopy, replaceCopy, type ManifestSummary } from './installer'
 import { fitPopup } from './popup-fit'
@@ -118,6 +120,7 @@ export interface ImportResult {
 
 export interface ExtensionHost {
   tabs: TabManager
+  downloads: DownloadManager
   window(): BrowserWindowController | null
   shell: ShellSync
   confirm(message: string, detail: string): Promise<boolean>
@@ -143,6 +146,7 @@ export class ExtensionManager {
   private api: ExtensionsApi | null = null
   private apiLoading: Promise<ExtensionsApi> | null = null
   private readonly compat: ExtensionCompat
+  private readonly downloads: ExtensionDownloads
   private readonly sidePanel: SidePanelState
   private readonly windows: ExtensionWindows
   private readonly placements = new Map<string, StoredPlacement>()
@@ -157,6 +161,8 @@ export class ExtensionManager {
   /** Extensions whose worker is putting user scripts back, resolved when it is done. */
   private readonly hydrating = new Map<string, () => void>()
   private actions: BrowserActionInternals | null = null
+  /** The library's record of granted permissions (optional ones once granted). */
+  private granted: Map<string, { permissions: string[]; origins: string[] }> | null = null
   private recording = false
   readonly dir: string
 
@@ -223,6 +229,19 @@ export class ExtensionManager {
       opened: (id, surface, url) => this.windowChanged(id, surface, url, true),
       closed: (id, surface, url) => this.windowChanged(id, surface, url, false)
     })
+    this.downloads = new ExtensionDownloads(ses, host.downloads, {
+      extension: (id) => {
+        const ext = ses.extensions.getExtension(id)
+        return ext ? { name: ext.name, permissions: this.grantedPermissions(ext) } : null
+      },
+      listeners: () =>
+        ses.extensions
+          .getAllExtensions()
+          .filter((ext) => this.grantedPermissions(ext).includes('downloads'))
+          .map((ext) => ext.id),
+      emit: (ids, name, payload, wake) => this.compat.downloadsEvent(ids, name, payload, wake),
+      exists: existsSync
+    })
     this.compat = new ExtensionCompat(
       ses,
       compatPreload,
@@ -237,7 +256,8 @@ export class ExtensionManager {
         }
       },
       { call: (id, method, arg) => this.sidePanelCall(id, method, arg) },
-      { allowed: (id) => this.userScriptsOn(id), call: (id, method, args) => this.userScriptsCall(id, method, args) }
+      { allowed: (id) => this.userScriptsOn(id), call: (id, method, args) => this.userScriptsCall(id, method, args) },
+      { call: (id, method, args) => this.downloads.call(id, method, args) }
     )
   }
 
@@ -866,6 +886,7 @@ export class ExtensionManager {
       const hosts = [...current.origins, ...current.permissions.filter((p) => p === '<all_urls>' || p.includes('://'))]
       return permissions.every((p) => current.permissions.includes(p)) && originsCovered(hosts, origins)
     }
+    this.granted = granted
     router.handle('permissions.contains', ({ extension }, query) => has(extension, query))
     router.handle('permissions.request', async (event, query: { permissions?: string[]; origins?: string[] } = {}) => {
       // Already granted: Chrome answers without asking.
@@ -876,6 +897,11 @@ export class ExtensionManager {
       }
       return ok
     })
+  }
+
+  /** API permissions `ext` holds now: its manifest's, plus optional ones it was granted. */
+  private grantedPermissions(ext: Electron.Extension): string[] {
+    return this.granted?.get(ext.id)?.permissions ?? stringList((ext.manifest as { permissions?: unknown }).permissions)
   }
 
   /** chrome.windows.create: popups get their own window, normal windows become tabs. */

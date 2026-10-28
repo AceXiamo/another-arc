@@ -5,7 +5,9 @@
 | 问题 | 影响的扩展 | 可能的方向 |
 |---|---|---|
 | `webRequest` 事件不派发给扩展 | uBlock Origin（MV2）、CocoCut、Wappalyzer 部分检测 | 改用 DNR 类扩展（uBlock Origin Lite）。自研 webRequest 桥接需要用 `session.webRequest` 代理，而它只允许一个监听者，还会和 DNR 冲突，暂不做 |
-| `chrome.userScripts` 未实现 | Tampermonkey、Violentmonkey | 可以用兼容层 + `scripting.registerContentScripts` 实现子集；优先级视需求而定 |
+| `chrome.userScripts` 是模拟的（基于 `scripting` 动态内容脚本） | Tampermonkey、Violentmonkey | 已可用。子框架里脚本跑在扩展的隔离 world，不是 USER_SCRIPT world |
+| `chrome.downloads` 是模拟的（扩展库只声明了空实现） | Tampermonkey 的 `GM_download`、各类下载管理器 | 已可用。限制：`onDeterminingFilename` 不触发（Electron 在下载开始时就定了保存路径）；中断原因只有 `USER_CANCELED` / `NETWORK_FAILED` / `FILE_FAILED`；`data:`、`blob:` 和 POST 下载先读进内存再写盘，没有进度、不能暂停；下载 id 删掉最新一条后重启可能复用 |
+| 扩展库里其余的空实现：`contextMenus.update`、`action.enable` / `disable`、`topSites.get` | 改菜单文字或勾选状态的扩展（含 Tampermonkey 的右键菜单）、按站点禁用按钮的扩展 | `contextMenus.update` 最值得补；另外两个影响小 |
 | `chrome.sidePanel` 是模拟的（面板显示在扩展窗口里） | OKX Wallet、MetaMask、Bitget 等钱包 | 已可用。限制：只有一个浏览器窗口，`windowId` 被忽略；面板不随标签切换（按标签的选项只在打开时读取）；`open()` 不要求用户手势 |
 | `chrome.identity` 未实现 | Phantom 等需要 OAuth 的扩展 | `getRedirectURL` / `launchWebAuthFlow` 可以用弹窗模拟 |
 | `tabs.captureVisibleTab`、`tabCapture`、`desktopCapture` | 截图、录屏类 | `captureVisibleTab` 可以用 `webContents.capturePage` 补，成本低，建议下一步做 |

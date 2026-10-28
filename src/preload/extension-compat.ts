@@ -20,6 +20,8 @@
 //      worker (it does fire in extension pages).
 //   3. chrome.runtime.getContexts can hit a fatal Chromium assertion.
 //   4. The native `browser` namespace lacks everything the library adds.
+//   5. chrome.downloads is declared but every method does nothing (see
+//      downloadsShim), so Tampermonkey's GM_download never saved a file.
 //
 // In service workers we replace those events with emulated ones fed by the
 // main process (onInstalled/onStartup) and by storage writes we observe
@@ -38,6 +40,8 @@ const CHANNEL_SIDE_PANEL = 'arc-compat:sidePanel'
 const CHANNEL_SIDE_PANEL_EVENT = 'arc-compat:sidePanelEvent'
 const CHANNEL_USER_SCRIPTS = 'arc-compat:userScripts'
 const CHANNEL_USER_SCRIPTS_STATE = 'arc-compat:userScriptsState'
+const CHANNEL_DOWNLOADS = 'arc-compat:downloads'
+const CHANNEL_DOWNLOADS_EVENT = 'arc-compat:downloadsEvent'
 
 type Deliver = (name: string, ...args: unknown[]) => void
 
@@ -522,6 +526,223 @@ function install(): void {
     runInMainWorld(routeUserScriptMessages)
   } catch (error) {
     console.error('[arc] extension compat shim failed', error)
+  }
+  installDownloads()
+}
+
+function installDownloads(): void {
+  let deliver: ((name: string, payload: unknown) => void) | null = null
+  ipcRenderer.on(CHANNEL_DOWNLOADS_EVENT, (_event, name: string, payload: unknown) => deliver?.(name, payload))
+  const bridge = {
+    call: (method: string, ...args: unknown[]) => invoke(CHANNEL_DOWNLOADS, method, ...args),
+    subscribe(cb: (name: string, payload: unknown) => void) {
+      deliver = cb
+    }
+  }
+  try {
+    exposeInMainWorld('__arcDownloads', bridge)
+    runInMainWorld(downloadsShim)
+  } catch (error) {
+    console.error('[arc] downloads shim failed', error)
+  }
+}
+
+/**
+ * chrome.downloads on top of the main process (src/main/extensions/downloads.ts).
+ * electron-chrome-extensions defines every method as a no-op that resolves
+ * with undefined; `chrome` is frozen by now, but the namespace object is
+ * not, so its members are replaced in place. data:, blob: and the
+ * extension's own URLs only resolve here, so they are read here and sent as
+ * bytes. Runs in the extension's JS world and must be self-contained.
+ */
+function downloadsShim(): void {
+  const g = globalThis as unknown as {
+    chrome?: any
+    __arcDownloads?: {
+      call(method: string, ...args: unknown[]): Promise<unknown>
+      subscribe(cb: (name: string, payload: unknown) => void): void
+    }
+  }
+  const bridge = g.__arcDownloads
+  try {
+    delete (g as Record<string, unknown>).__arcDownloads
+  } catch {
+    // exposed bindings may be non-configurable
+  }
+  const chrome = g.chrome
+  const api = chrome?.downloads
+  if (!bridge || !chrome?.runtime?.id || !api || Object.isFrozen(api)) return
+  let manifest: { permissions?: unknown; optional_permissions?: unknown } = {}
+  try {
+    manifest = chrome.runtime.getManifest() ?? {}
+  } catch {
+    return
+  }
+  const asks = (list: unknown) => Array.isArray(list) && list.includes('downloads')
+  if (!asks(manifest.permissions) && !asks(manifest.optional_permissions)) return
+
+  const runtime = chrome.runtime
+  /** Call `cb` with chrome.runtime.lastError set, as Chrome reports a failed call to a callback. */
+  const withLastError = (message: string, cb: () => void) => {
+    const before = Object.getOwnPropertyDescriptor(runtime, 'lastError')
+    let set = false
+    try {
+      Object.defineProperty(runtime, 'lastError', { value: { message }, configurable: true, enumerable: true, writable: true })
+      set = true
+    } catch {
+      // not configurable: the callback just gets no result
+    }
+    try {
+      cb()
+    } finally {
+      if (set) {
+        try {
+          if (before) Object.defineProperty(runtime, 'lastError', before)
+          else delete runtime.lastError
+        } catch {
+          // ignore
+        }
+      }
+    }
+  }
+  const call = (method: string, ...args: unknown[]): Promise<unknown> =>
+    bridge.call(method, ...args).catch((error: unknown) => {
+      const message = String((error as Error)?.message ?? error)
+      throw new Error(message.replace(/^Error invoking remote method '[^']*': (?:\w*Error: )?/, ''))
+    })
+  /** Promise, or callback when one is given, like every chrome.* method. */
+  const finish = (p: Promise<unknown>, cb?: unknown) => {
+    if (typeof cb !== 'function') return p
+    p.then(
+      (result) => (cb as (r: unknown) => void)(result),
+      (error: Error) => withLastError(error.message, () => (cb as () => void)())
+    )
+    return undefined
+  }
+  const plain = (v: unknown) => (v === undefined || v === null ? null : JSON.parse(JSON.stringify(v)))
+  const quiet = (p: Promise<unknown>) => void p.catch((error) => console.warn('[arc] chrome.downloads', error))
+
+  const own = `chrome-extension://${runtime.id}/`
+  const download = async (options: unknown): Promise<unknown> => {
+    const opts = plain(options)
+    const url: string = typeof opts?.url === 'string' ? opts.url : ''
+    if (!/^(data|blob):/i.test(url) && !url.startsWith(own)) return call('download', opts)
+    let response: Response
+    try {
+      response = await fetch(url)
+    } catch {
+      throw new Error('Invalid URL')
+    }
+    if (!response.ok) throw new Error('Invalid URL')
+    const bytes = new Uint8Array(await response.arrayBuffer())
+    return call('downloadData', opts, bytes, response.headers.get('content-type') ?? '')
+  }
+
+  function makeEvent() {
+    const listeners = new Set<(...args: unknown[]) => void>()
+    return {
+      addListener: (fn: (...args: unknown[]) => void) => void (typeof fn === 'function' && listeners.add(fn)),
+      removeListener: (fn: (...args: unknown[]) => void) => void listeners.delete(fn),
+      hasListener: (fn: (...args: unknown[]) => void) => listeners.has(fn),
+      hasListeners: () => listeners.size > 0,
+      dispatch(...args: unknown[]) {
+        for (const fn of [...listeners]) {
+          try {
+            fn(...args)
+          } catch (error) {
+            console.error(error)
+          }
+        }
+      }
+    }
+  }
+  const onCreated = makeEvent()
+  const onChanged = makeEvent()
+  const onErased = makeEvent()
+  // Never fires: Electron fixes the save path before an extension could answer.
+  const onDeterminingFilename = makeEvent()
+  bridge.subscribe((name, payload) => {
+    if (name === 'onCreated') onCreated.dispatch(payload)
+    else if (name === 'onChanged') onChanged.dispatch(payload)
+    else if (name === 'onErased') onErased.dispatch(payload)
+  })
+
+  const members: Record<string, unknown> = {
+    download: (options: unknown, cb?: unknown) => finish(download(options), cb),
+    search: (query: unknown, cb?: unknown) => finish(call('search', plain(query) ?? {}), cb),
+    pause: (id: unknown, cb?: unknown) => finish(call('pause', id), cb),
+    resume: (id: unknown, cb?: unknown) => finish(call('resume', id), cb),
+    cancel: (id: unknown, cb?: unknown) => finish(call('cancel', id), cb),
+    erase: (query: unknown, cb?: unknown) => finish(call('erase', plain(query) ?? {}), cb),
+    removeFile: (id: unknown, cb?: unknown) => finish(call('removeFile', id), cb),
+    open: (id: unknown, cb?: unknown) => finish(call('open', id), cb),
+    show: (id: unknown) => quiet(call('show', id)),
+    showDefaultFolder: () => quiet(call('showDefaultFolder')),
+    getFileIcon: (id: unknown, options?: unknown, cb?: unknown) => {
+      if (typeof options === 'function') [cb, options] = [options, undefined]
+      return finish(call('getFileIcon', id, plain(options)), cb)
+    },
+    acceptDanger: (id: unknown, cb?: unknown) => finish(call('acceptDanger', id), cb),
+    setUiOptions: (options: unknown, cb?: unknown) => finish(call('setUiOptions', plain(options)), cb),
+    setShelfEnabled: (enabled: unknown) => quiet(call('setShelfEnabled', Boolean(enabled))),
+    drag: () => undefined,
+    onCreated,
+    onChanged,
+    onErased,
+    onDeterminingFilename,
+    FilenameConflictAction: { UNIQUIFY: 'uniquify', OVERWRITE: 'overwrite', PROMPT: 'prompt' },
+    HttpMethod: { GET: 'GET', POST: 'POST' },
+    State: { IN_PROGRESS: 'in_progress', INTERRUPTED: 'interrupted', COMPLETE: 'complete' },
+    DangerType: {
+      FILE: 'file',
+      URL: 'url',
+      CONTENT: 'content',
+      UNCOMMON: 'uncommon',
+      HOST: 'host',
+      UNWANTED: 'unwanted',
+      SAFE: 'safe',
+      ACCEPTED: 'accepted'
+    },
+    InterruptReason: Object.fromEntries(
+      [
+        'FILE_FAILED',
+        'FILE_ACCESS_DENIED',
+        'FILE_NO_SPACE',
+        'FILE_NAME_TOO_LONG',
+        'FILE_TOO_LARGE',
+        'FILE_VIRUS_INFECTED',
+        'FILE_TRANSIENT_ERROR',
+        'FILE_BLOCKED',
+        'FILE_SECURITY_CHECK_FAILED',
+        'FILE_TOO_SHORT',
+        'FILE_HASH_MISMATCH',
+        'FILE_SAME_AS_SOURCE',
+        'NETWORK_FAILED',
+        'NETWORK_TIMEOUT',
+        'NETWORK_DISCONNECTED',
+        'NETWORK_SERVER_DOWN',
+        'NETWORK_INVALID_REQUEST',
+        'SERVER_FAILED',
+        'SERVER_NO_RANGE',
+        'SERVER_BAD_CONTENT',
+        'SERVER_UNAUTHORIZED',
+        'SERVER_CERT_PROBLEM',
+        'SERVER_FORBIDDEN',
+        'SERVER_UNREACHABLE',
+        'SERVER_CONTENT_LENGTH_MISMATCH',
+        'SERVER_CROSS_ORIGIN_REDIRECT',
+        'USER_CANCELED',
+        'USER_SHUTDOWN',
+        'CRASH'
+      ].map((r) => [r, r])
+    )
+  }
+  for (const [key, value] of Object.entries(members)) {
+    try {
+      api[key] = value
+    } catch {
+      // not writable: that member keeps the library's no-op
+    }
   }
 }
 

@@ -227,6 +227,13 @@ const MIGRATIONS: string[] = [
   // v5 — the favicon a history page last showed (a key into `favicons`).
   `
   ALTER TABLE history_urls ADD COLUMN favicon TEXT;
+  `,
+  // v6 — chrome.downloads: a stable integer id per download (extensions keep
+  // ids across restarts) and the extension that started it, if any.
+  `
+  ALTER TABLE downloads ADD COLUMN seq INTEGER;
+  ALTER TABLE downloads ADD COLUMN initiator TEXT;
+  UPDATE downloads SET seq = rowid;
   `
 ]
 

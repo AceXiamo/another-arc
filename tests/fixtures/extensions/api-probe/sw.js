@@ -52,7 +52,7 @@ function withTimeout(promise, ms = 4000) {
   return Promise.race([promise, sleep(ms).then(() => Promise.reject(new Error(`timeout after ${ms}ms`)))])
 }
 
-async function runChecks(tabId) {
+async function runChecks(tabId, downloads) {
   const results = []
   const check = async (api, name, fn) => {
     try {
@@ -256,6 +256,53 @@ async function runChecks(tabId) {
   })
   await check('userScripts', 'available', () => typeof chrome.userScripts?.register === 'function')
 
+  // -- downloads ---------------------------------------------------------------
+  // Emulated by the compat layer: the library declares chrome.downloads but
+  // every method does nothing.
+  if (downloads) {
+    const ended = (id) =>
+      new Promise((resolve) => {
+        const on = (d) => {
+          if (d.id !== id || !d.state || d.state.current === 'in_progress') return
+          chrome.downloads.onChanged.removeListener(on)
+          resolve(d.state.current)
+        }
+        chrome.downloads.onChanged.addListener(on)
+      })
+    let created = null
+    const onCreated = (item) => (created = item)
+    chrome.downloads.onCreated.addListener(onCreated)
+    await check('downloads', 'download+onCreated+onChanged', async () => {
+      const id = await chrome.downloads.download({ url: `${origin}/page/downloaded`, filename: 'probe/page.html', conflictAction: 'overwrite' })
+      if (typeof id !== 'number') return `id ${id}`
+      const end = await ended(id)
+      if (end !== 'complete') return end
+      return created?.id === id && created.byExtensionId === chrome.runtime.id ? true : JSON.stringify(created)
+    })
+    chrome.downloads.onCreated.removeListener(onCreated)
+    await check('downloads', 'search', async () => {
+      const [item] = await chrome.downloads.search({ filenameRegex: 'probe/page\\.html$', limit: 1 })
+      return item?.state === 'complete' && item.exists && item.fileSize > 0 ? true : JSON.stringify(item)
+    })
+    await check('downloads', 'data: URL', async () => {
+      const id = await chrome.downloads.download({ url: 'data:text/plain,probe', filename: 'probe/data.txt', conflictAction: 'overwrite' })
+      const [item] = (await ended(id)) === 'complete' ? await chrome.downloads.search({ id }) : []
+      return item?.fileSize === 5 ? true : JSON.stringify(item)
+    })
+    await check('downloads', 'invalid filename (callback + lastError)', async () => {
+      const message = await new Promise((resolve) =>
+        chrome.downloads.download({ url: `${origin}/page/x`, filename: '../x' }, (id) => resolve(id === undefined ? chrome.runtime.lastError?.message : `id ${id}`))
+      )
+      return message === 'Invalid filename' ? true : String(message)
+    })
+    await check('downloads', 'erase+onErased', async () => {
+      const [item] = await chrome.downloads.search({ filenameRegex: 'probe/data\\.txt$', limit: 1 })
+      const erased = new Promise((resolve) => chrome.downloads.onErased.addListener(resolve))
+      const ids = await chrome.downloads.erase({ id: item.id })
+      return ids[0] === item.id && (await erased) === item.id ? true : JSON.stringify(ids)
+    })
+  }
+
   return results
 }
 
@@ -263,7 +310,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message?.type === 'start' && sender.tab?.id !== undefined) {
     origin = message.origin
     sendResponse({ ok: true })
-    runChecks(sender.tab.id).then((results) =>
+    runChecks(sender.tab.id, message.downloads === true).then((results) =>
       fetch(`${origin}/report`, { method: 'POST', body: JSON.stringify({ kind: 'checks', results }) })
     )
     return false

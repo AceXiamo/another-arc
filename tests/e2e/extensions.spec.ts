@@ -38,7 +38,13 @@ const REQUIRED = [
   'sidePanel:available',
   'sidePanel:top-level setPanelBehavior',
   'sidePanel:setPanelBehavior/getPanelBehavior',
-  'sidePanel:setOptions/getOptions'
+  'sidePanel:setOptions/getOptions',
+  // Emulated too: the library's chrome.downloads does nothing.
+  'downloads:download+onCreated+onChanged',
+  'downloads:search',
+  'downloads:data: URL',
+  'downloads:invalid filename (callback + lastError)',
+  'downloads:erase+onErased'
 ]
 
 test('API probe: service worker, content script, popup, options and lifecycle', async () => {
@@ -52,8 +58,10 @@ test('API probe: service worker, content script, popup, options and lifecycle', 
     expect(ext.enabled).toBe(true)
     expect(ext.manifestVersion).toBe(3)
 
-    // Content script + service worker checks.
-    await rpc(run.shell, 'tabs.create', { url: `${url}/probe` })
+    // Content script + service worker checks. Downloads land in a scratch folder.
+    const downloadDir = tempDir('arc-e2e-dl-')
+    await rpc(run.shell, 'settings.update', { downloadDir })
+    await rpc(run.shell, 'tabs.create', { url: `${url}/probe?downloads` })
     await waitForShown(run.app, '/probe')
     await expect.poll(() => reports.some((r) => r.kind === 'checks'), { timeout: 90_000 }).toBe(true)
     const results: Array<{ api: string; name: string; ok: boolean; detail: string }> = reports.find(
@@ -68,6 +76,9 @@ test('API probe: service worker, content script, popup, options and lifecycle', 
     )
     const failedRequired = REQUIRED.filter((key) => !results.find((r) => `${r.api}:${r.name}` === key)?.ok)
     expect(failedRequired).toEqual([])
+    // chrome.downloads.download made the folder its filename names.
+    expect(existsSync(join(downloadDir, 'probe', 'page.html'))).toBe(true)
+    removeDir(downloadDir)
 
     // The extension's action shows up in the sidebar; clicking opens its popup.
     const actionIcon = run.shell.locator(`img[src*="extension-icon/${ext.id}"]`)

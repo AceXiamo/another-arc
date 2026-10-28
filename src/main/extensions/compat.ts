@@ -8,6 +8,8 @@ const CHANNEL_SIDE_PANEL = 'arc-compat:sidePanel'
 const CHANNEL_SIDE_PANEL_EVENT = 'arc-compat:sidePanelEvent'
 const CHANNEL_USER_SCRIPTS = 'arc-compat:userScripts'
 const CHANNEL_USER_SCRIPTS_STATE = 'arc-compat:userScriptsState'
+const CHANNEL_DOWNLOADS = 'arc-compat:downloads'
+const CHANNEL_DOWNLOADS_EVENT = 'arc-compat:downloadsEvent'
 /** Listener registrations reach main as IPC sent during the worker's first run; let them land. */
 const LISTENER_SETTLE_MS = 150
 const WAKE_TIMEOUT_MS = 4000
@@ -50,6 +52,11 @@ export interface UserScriptsBackend {
   call(id: string, method: string, args: unknown[]): Promise<unknown>
 }
 
+/** Main-process implementation of chrome.downloads (see downloads.ts). */
+export interface DownloadsBackend {
+  call(id: string, method: string, args: unknown[]): Promise<unknown>
+}
+
 export interface InstalledDetails {
   reason: 'install' | 'update'
   previousVersion?: string
@@ -59,7 +66,8 @@ export interface InstalledDetails {
  * Main-process half of src/preload/extension-compat.ts: delivers
  * runtime.onInstalled / onStartup, forwards extension-page storage changes
  * to the extension's service worker, answers runtime.getContexts and
- * carries chrome.sidePanel and chrome.userScripts calls to their backends.
+ * carries chrome.sidePanel, chrome.userScripts and chrome.downloads calls
+ * to their backends.
  */
 export class ExtensionCompat {
   private readonly pendingInstalled = new Map<string, InstalledDetails>()
@@ -77,7 +85,8 @@ export class ExtensionCompat {
     private readonly persistStartupListeners: (ids: string[]) => void,
     private readonly contextHost: ContextHost,
     private readonly sidePanel: SidePanelBackend,
-    private readonly userScripts: UserScriptsBackend
+    private readonly userScripts: UserScriptsBackend,
+    private readonly downloads: DownloadsBackend
   ) {
     this.startupListeners = new Set(startupListeners)
   }
@@ -128,6 +137,11 @@ export class ExtensionCompat {
       return id && typeof method === 'string' ? this.userScripts.call(id, method, args) : undefined
     })
 
+    ipcMain.handle(CHANNEL_DOWNLOADS, (event, method: unknown, ...args: unknown[]) => {
+      const id = event.sender.session === this.ses ? extensionIdOf(event.senderFrame?.url ?? '') : null
+      return id && typeof method === 'string' ? this.downloads.call(id, method, args) : undefined
+    })
+
     // Extension pages ask synchronously, before their own scripts run, so
     // chrome.userScripts is there (or not) from the first line, as in Chrome.
     ipcMain.on(CHANNEL_USER_SCRIPTS_STATE, (event: IpcMainEvent) => {
@@ -171,6 +185,37 @@ export class ExtensionCompat {
       if (!wc.isDestroyed() && wc.session === this.ses && wc.getURL().startsWith(prefix)) {
         wc.send(CHANNEL_SIDE_PANEL_EVENT, name, payload)
       }
+    }
+  }
+
+  /**
+   * A chrome.downloads event, to the running workers and open pages of
+   * `ids`. `wake` is started first when its worker is not running.
+   */
+  downloadsEvent(ids: string[], name: string, payload: unknown, wake: string | null): void {
+    const wanted = new Set(ids)
+    const delivered = new Set<string>()
+    for (const [versionId, info] of Object.entries(this.ses.serviceWorkers.getAllRunning())) {
+      const id = extensionIdOf(info.scope)
+      if (!id || !wanted.has(id)) continue
+      const worker = this.ses.serviceWorkers.getWorkerFromVersionID(Number(versionId))
+      if (!worker || worker.isDestroyed()) continue
+      this.hook(id, worker)
+      worker.send(CHANNEL_DOWNLOADS_EVENT, name, payload)
+      delivered.add(id)
+    }
+    for (const wc of webContents.getAllWebContents()) {
+      if (wc.isDestroyed() || wc.session !== this.ses) continue
+      const id = extensionIdOf(wc.getURL())
+      if (id && wanted.has(id)) wc.send(CHANNEL_DOWNLOADS_EVENT, name, payload)
+    }
+    if (wake && wanted.has(wake) && !delivered.has(wake)) {
+      void this.wake(wake).then((worker) => {
+        // Listeners register as the worker's first run settles.
+        if (!worker) return
+        this.holdAwake(worker)
+        setTimeout(() => !worker.isDestroyed() && worker.send(CHANNEL_DOWNLOADS_EVENT, name, payload), LISTENER_SETTLE_MS)
+      })
     }
   }
 
@@ -226,6 +271,9 @@ export class ExtensionCompat {
     )
     worker.ipc.handle(CHANNEL_USER_SCRIPTS, (_event, method: unknown, ...args: unknown[]) =>
       method === 'state' ? this.userScripts.allowed(id) : typeof method === 'string' ? this.userScripts.call(id, method, args) : undefined
+    )
+    worker.ipc.handle(CHANNEL_DOWNLOADS, (_event, method: unknown, ...args: unknown[]) =>
+      typeof method === 'string' ? this.downloads.call(id, method, args) : undefined
     )
   }
 
@@ -299,6 +347,11 @@ export class ExtensionCompat {
 
   private dispatch(worker: ServiceWorkerMain, name: string, ...args: unknown[]): void {
     if (worker.isDestroyed()) return
+    this.holdAwake(worker)
+    worker.send(CHANNEL_EVENT, name, ...args)
+  }
+
+  private holdAwake(worker: ServiceWorkerMain): void {
     try {
       const task = worker.startTask()
       this.keepAlive.add(task)
@@ -308,7 +361,6 @@ export class ExtensionCompat {
     } catch {
       // Worker already stopping; deliver anyway.
     }
-    worker.send(CHANNEL_EVENT, name, ...args)
   }
 }
 

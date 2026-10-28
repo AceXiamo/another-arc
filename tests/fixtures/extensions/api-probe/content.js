@@ -11,7 +11,9 @@ chrome.runtime.onConnect.addListener((port) => {
 })
 
 if (location.pathname === '/probe') {
-  chrome.runtime.sendMessage({ type: 'start', origin: location.origin }, (reply) => {
+  // ?downloads: the test points the download folder somewhere disposable first.
+  const downloads = new URLSearchParams(location.search).has('downloads')
+  chrome.runtime.sendMessage({ type: 'start', origin: location.origin, downloads }, (reply) => {
     document.documentElement.dataset.probeStarted = reply?.ok ? '1' : '0'
   })
 }
