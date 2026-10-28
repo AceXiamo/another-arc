@@ -9,3 +9,13 @@ playwright-report/
 .vite/
 out-*/
 test-reports/
+
+# Secrets and signing material: never commit these.
+.env
+.env.*
+*.p12
+*.pem
+*.cer
+*.key
+*.provisionprofile
+.claude/settings.local.json
