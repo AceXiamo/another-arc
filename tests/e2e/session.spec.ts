@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test'
-import { inMain, launch, quit, removeDir, rpc, startServer, state, tempDir, waitForShown } from './helpers'
+import { inMain, launch, quit, removeDir, rpc, startServer, state, t, tempDir, waitForShown } from './helpers'
 
 test('spaces, tabs, settings and layout survive a restart', async () => {
   const { url, server } = await startServer()
@@ -53,6 +53,35 @@ test('spaces, tabs, settings and layout survive a restart', async () => {
     expect(await inMain(run.app, (b) => b.window.getLayout().sidebarWidth)).toBe(300)
     await quit(run.app)
   } finally {
+    server.close()
+    removeDir(userData)
+  }
+})
+
+test('a tab woken after a restart shows its page under ⌘T, not a blank card', async () => {
+  const { url, server } = await startServer()
+  const userData = tempDir()
+  let run = await launch(userData)
+  try {
+    const asleep = await rpc<string>(run.shell, 'tabs.create', { url: `${url}/page/asleep` })
+    await waitForShown(run.app, '/page/asleep')
+    await rpc(run.shell, 'tabs.create', { url: `${url}/page/front` })
+    await waitForShown(run.app, '/page/front')
+    await quit(run.app)
+
+    // Restored asleep, then woken by selecting it.
+    run = await launch(userData)
+    await waitForShown(run.app, '/page/front')
+    await rpc(run.shell, 'tabs.activate', asleep)
+    await waitForShown(run.app, '/page/asleep')
+
+    // ⌘T raises the shell over the page; with the tab live, the shell draws
+    // nothing on the card and the page shows through.
+    await inMain(run.app, (b) => b.runCommand('tab.new'))
+    await expect(run.shell.getByPlaceholder(t('palette.input.searchPlaceholder'))).toBeVisible()
+    await expect(run.shell.locator('[data-card-content]')).toHaveCount(0)
+  } finally {
+    await quit(run.app)
     server.close()
     removeDir(userData)
   }

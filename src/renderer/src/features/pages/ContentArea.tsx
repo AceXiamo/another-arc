@@ -55,7 +55,11 @@ export function ContentArea({ left }: { left: string }) {
         boxShadow: '0 0 0 100vmax var(--chrome)'
       }}
     >
-      {content && <div className="absolute inset-0 bg-[var(--surface)]">{content}</div>}
+      {content && (
+        <div data-card-content className="absolute inset-0 bg-[var(--surface)]">
+          {content}
+        </div>
+      )}
       <PageDialogSheet />
     </div>
   )

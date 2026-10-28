@@ -978,8 +978,12 @@ export class TabManager implements TabRuntimeHost {
     const rt = new TabRuntime(tab.id, session, this, adopt)
     this.runtimes.set(tab.id, rt)
     this.byWebContents.set(rt.wc.id, tab.id)
-    tab.live = true
+    // Through the model first: `tab` is often the model's own object, and the
+    // model reports only fields that change, so setting it here first kept
+    // the shell thinking the tab had no page (its placeholder then covered the
+    // page whenever the shell was raised, as for ⌘T).
     if (this.model.getTab(tab.id)) this.model.updateTab(tab.id, { live: true, crashed: false })
+    tab.live = true
     if (tab.muted) rt.wc.setAudioMuted(true)
     this.delegate?.runtimeCreated(tab, rt.wc)
     return rt
