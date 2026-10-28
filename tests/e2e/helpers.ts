@@ -245,6 +245,17 @@ export async function startServer(): Promise<{ url: string; server: Server; repo
             '<input id="p" name="pw" type="password" autocomplete="current-password">' +
             '<button type="submit">Sign in</button></form>'
         )
+      case '/login-captcha':
+        // Nothing hints which field is which, a honeypot hides between them,
+        // and a captcha box follows the password.
+        return page(
+          'Sign in',
+          '<form id="f"><input id="u" type="text" autocomplete="off">' +
+            '<input id="h" type="text" style="display:none">' +
+            '<input id="p" type="password" autocomplete="off">' +
+            '<input id="c" type="text" autocomplete="off">' +
+            '<button type="submit">Sign in</button></form>'
+        )
       case '/favicon.ico':
         res.writeHead(200, { 'content-type': 'image/svg+xml' })
         res.end('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><rect width="16" height="16" rx="3" fill="#e33"/></svg>')

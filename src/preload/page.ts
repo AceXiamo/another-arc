@@ -34,8 +34,11 @@ import './user-script-world'
 const PASSWORD = 'input[type="password"]'
 /** Field types a username can live in. */
 const USERNAME_TYPES = new Set(['text', 'email', 'tel', ''])
-/** Autocomplete hints that mark a field as the username of a sign-in. */
-const USERNAME_HINTS = /^(username|email|tel|new-username)$/
+/**
+ * Autocomplete hints that mark a field as the username of a sign-in: the
+ * field name, after any section or contact tokens and before `webauthn`.
+ */
+const USERNAME_HINTS = /(?:^|\s)(?:username|email|tel|new-username)(?:\s+webauthn)?\s*$/i
 
 /** The sign-in field the dropdown belongs to. */
 let field: HTMLInputElement | null = null
@@ -52,7 +55,11 @@ function isPassword(node: unknown): node is HTMLInputElement {
 function isUsername(node: unknown): node is HTMLInputElement {
   if (!(node instanceof HTMLInputElement)) return false
   if (USERNAME_HINTS.test(node.autocomplete)) return true
-  return USERNAME_TYPES.has(node.type) && passwordNear(node) !== null
+  if (!USERNAME_TYPES.has(node.type)) return false
+  // Only the field the password pairs with, as other browsers do: a captcha
+  // or a code box in the same form is a text field too.
+  const password = passwordNear(node)
+  return password !== null && usernameBefore(password) === node
 }
 
 function isLoginField(node: unknown): node is HTMLInputElement {
@@ -76,11 +83,12 @@ function passwordNear(input: HTMLInputElement): HTMLInputElement | null {
 function usernameBefore(password: HTMLInputElement): HTMLInputElement | null {
   const scope: ParentNode = password.form ?? document
   const inputs = [...scope.querySelectorAll<HTMLInputElement>('input')]
-  // The username is the editable text field directly before the password.
+  // The username is the editable text field directly before the password,
+  // past any the user cannot see (honeypots and the like).
   for (let i = inputs.indexOf(password) - 1; i >= 0; i -= 1) {
     const candidate = inputs[i]!
-    if (candidate.disabled || candidate.readOnly || candidate.type === 'hidden') continue
-    if (USERNAME_TYPES.has(candidate.type)) return candidate
+    if (candidate.disabled || candidate.readOnly || !USERNAME_TYPES.has(candidate.type)) continue
+    if (candidate.checkVisibility()) return candidate
   }
   return null
 }

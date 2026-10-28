@@ -60,14 +60,14 @@ const toggles = (app: ElectronApplication) =>
 
 const settle = () => new Promise((r) => setTimeout(r, 800))
 
-async function signInPage(names: string[]) {
+async function signInPage(names: string[], path = '/login') {
   const { url, server } = await startServer()
   const launched = await launch()
   const { app, shell } = launched
   const origin = new URL(url).origin
   for (const name of names) await inMain(app, (b, a: [string, string]) => b.passwords.store.save(a[0], a[1], `pw-${a[1]}`), [origin, name])
-  await rpc(shell, 'tabs.create', { url: `${url}/login` })
-  await waitForShown(app, `${url}/login`)
+  await rpc(shell, 'tabs.create', { url: `${url}${path}` })
+  await waitForShown(app, `${url}${path}`)
   await inMain(app, (b) => b.tabs.liveRuntimes()[0].wc.focus())
   await recordToggles(app)
   return { ...launched, url, server, origin }
@@ -182,6 +182,30 @@ test('Escape closes it, a click on the field opens it again, and ↓ does too', 
     await expect.poll(() => dropdown(app)).toMatchObject({ visible: false })
     await press(app, 'Down')
     await expect.poll(() => dropdown(app)).toMatchObject({ visible: true })
+  } finally {
+    await quit(app)
+    removeDir(userData)
+    server.close()
+  }
+})
+
+test('only the username and password open it, not a captcha in the same form', async () => {
+  const { app, userData, server } = await signInPage(['ace'], '/login-captcha')
+  try {
+    await click(app, 'c')
+    await settle()
+    expect(await page(app, 'document.activeElement.id')).toBe('c')
+    expect(await toggles(app)).toEqual([])
+
+    // The username is the visible text field before the password, hint or not.
+    await click(app, 'u')
+    await expect.poll(() => dropdown(app), { timeout: 5000 }).toMatchObject({ visible: true })
+    await settle()
+    await press(app, 'Down')
+    await settle()
+    await press(app, 'Enter')
+    await expect.poll(() => fields(app), { timeout: 5000 }).toBe('ace:pw-ace')
+    expect(await page(app, 'document.getElementById("h").value + document.getElementById("c").value')).toBe('')
   } finally {
     await quit(app)
     removeDir(userData)
