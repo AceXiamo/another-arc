@@ -6,6 +6,7 @@ export function PageLayout({
   icon,
   actions,
   back,
+  header,
   children
 }: {
   title: string
@@ -14,6 +15,8 @@ export function PageLayout({
   actions?: React.ReactNode
   /** A page reached from another one: a link back to it above the title. */
   back?: { label: string; onClick: () => void }
+  /** A page's own banner in place of the title row (it shows the title itself). */
+  header?: React.ReactNode
   children: React.ReactNode
 }) {
   return (
@@ -29,11 +32,13 @@ export function PageLayout({
             {back.label}
           </button>
         )}
-        <header className="flex min-h-8 items-center gap-3">
-          {icon}
-          <h1 className="min-w-0 flex-1 truncate text-[24px] font-semibold leading-tight tracking-[-0.01em]">{title}</h1>
-          {actions}
-        </header>
+        {header ?? (
+          <header className="flex min-h-8 items-center gap-3">
+            {icon}
+            <h1 className="min-w-0 flex-1 truncate text-[24px] font-semibold leading-tight tracking-[-0.01em]">{title}</h1>
+            {actions}
+          </header>
+        )}
         {children}
       </div>
     </div>

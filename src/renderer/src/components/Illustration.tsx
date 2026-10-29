@@ -51,7 +51,7 @@ const ART = {
   certificate: [104, 107],
   history: [123, 102],
   'no-results': [105, 112],
-  downloads: [123, 100],
+  'downloads-hero': [130, 116],
   extensions: [124, 105]
 } as const satisfies Record<string, readonly [number, number]>
 
@@ -115,5 +115,49 @@ export const FileIcon = memo(function FileIcon({ kind, className }: { kind: File
         line: `color-mix(in oklab, ${tint} 72%, var(--text))`
       }}
     />
+  )
+})
+
+/**
+ * Rounded tile with a file type's glyph (40x40), for lists. `children` are
+ * laid over it (a thumbnail); `covered` hides the glyph and tint under them
+ * so a transparent image shows on a plain surface.
+ */
+export const FileTile = memo(function FileTile({
+  kind,
+  covered,
+  className = '',
+  children
+}: {
+  kind: FileKind
+  covered?: boolean
+  className?: string
+  children?: React.ReactNode
+}) {
+  const [h, c] = FILE_TINTS[kind]
+  const tint = `oklch(0.64 ${c} ${h})`
+  return (
+    <span
+      aria-hidden
+      className={`relative grid h-10 w-10 shrink-0 place-items-center overflow-hidden rounded-[10px] transition-[background-color] duration-200 ${className}`}
+      style={{ background: covered ? 'var(--surface)' : `color-mix(in oklab, ${tint} ${c > 0 ? 13 : 9}%, var(--surface))` }}
+    >
+      <Layered
+        src={`./file-glyphs/${kind}.png`}
+        width={22}
+        height={22}
+        className={`transition-opacity duration-200 ${covered ? 'opacity-0' : ''}`}
+        layers={{
+          fill: `color-mix(in oklab, ${tint} ${c > 0 ? 34 : 22}%, var(--surface))`,
+          line: `color-mix(in oklab, ${tint} 76%, var(--text))`
+        }}
+      />
+      {children}
+      {/* Edge over the thumbnail too, so light images keep their shape. */}
+      <span
+        className="pointer-events-none absolute inset-0 rounded-[inherit]"
+        style={{ boxShadow: `inset 0 0 0 0.5px ${covered ? 'var(--line)' : `color-mix(in oklab, ${tint} 22%, transparent)`}` }}
+      />
+    </span>
   )
 })

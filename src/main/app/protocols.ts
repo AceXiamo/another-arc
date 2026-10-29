@@ -8,6 +8,8 @@ export const SHELL_SCHEME = 'app'
 export const SHELL_HOST = 'shell'
 export const SHELL_ORIGIN = `${SHELL_SCHEME}://${SHELL_HOST}`
 export const FAVICON_SCHEME = 'favicon'
+/** Download thumbnails: `thumb://download/<id>?v=<endedAt>`. */
+export const THUMB_SCHEME = 'thumb'
 
 /** Must run before `app.whenReady()`. Electron allows a single call. */
 export function registerPrivilegedSchemes(): void {
@@ -19,6 +21,7 @@ export function registerPrivilegedSchemes(): void {
       privileges: { standard: true, secure: true, supportFetchAPI: true, codeCache: true }
     },
     { scheme: FAVICON_SCHEME, privileges: { standard: true, secure: true } },
+    { scheme: THUMB_SCHEME, privileges: { standard: true, secure: true } },
     // Registered on behalf of electron-chrome-extensions, which is imported
     // lazily after `ready` and therefore cannot register it itself. `secure`
     // matters: the shell is a secure context (app://) and would otherwise
@@ -43,7 +46,7 @@ const SHELL_CSP = [
   "default-src 'self'",
   "script-src 'self'",
   "style-src 'self' 'unsafe-inline'",
-  `img-src 'self' data: ${FAVICON_SCHEME}: crx:`,
+  `img-src 'self' data: ${FAVICON_SCHEME}: ${THUMB_SCHEME}: crx:`,
   "font-src 'self'",
   "connect-src 'self'",
   "object-src 'none'",
@@ -52,17 +55,19 @@ const SHELL_CSP = [
 ].join('; ')
 
 /**
- * Serves the built shell from `out/renderer`, cached favicons and extension
- * action icons. All three must be registered before the shell loads: Chromium
- * binds custom-scheme loaders when a frame is created, so a handler added
- * later (e.g. by the lazily imported extensions library) never reaches it.
+ * Serves the built shell from `out/renderer`, cached favicons, download
+ * thumbnails and extension action icons. All must be registered before the
+ * shell loads: Chromium binds custom-scheme loaders when a frame is created,
+ * so a handler added later (e.g. by the lazily imported extensions library)
+ * never reaches it.
  * A favicon missing from the cache (a history page's site icon) is fetched
  * once through `iconSession`; the shell itself never touches the network.
  */
 export function handleAppProtocols(
   favicons: FaviconCache,
   extensionIcon: (request: Request) => Response | Promise<Response>,
-  iconSession: () => Session
+  iconSession: () => Session,
+  downloadThumbnail: (id: string) => Promise<Buffer | null>
 ): void {
   const root = outPath('renderer')
   const ses = session.defaultSession
@@ -87,6 +92,16 @@ export function handleAppProtocols(
   })
 
   ses.protocol.handle('crx', extensionIcon)
+
+  ses.protocol.handle(THUMB_SCHEME, async (request) => {
+    const url = new URL(request.url)
+    const png = url.host === 'download' ? await downloadThumbnail(decodeURIComponent(url.pathname.slice(1))) : null
+    if (!png) return new Response(null, { status: 404 })
+    // `v` changes when the file does, so a URL never goes stale.
+    return new Response(new Uint8Array(png), {
+      headers: { 'content-type': 'image/png', 'cache-control': 'max-age=31536000, immutable' }
+    })
+  })
 
   ses.protocol.handle(FAVICON_SCHEME, async (request) => {
     const target = new URL(request.url).searchParams.get('u')

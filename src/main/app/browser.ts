@@ -257,7 +257,8 @@ export class Browser {
     handleAppProtocols(
       this.favicons,
       (request) => this.extensions.handleIconRequest(request),
-      () => this.profiles.sessionFor(DEFAULT_PROFILE_ID)
+      () => this.profiles.sessionFor(DEFAULT_PROFILE_ID),
+      (id) => this.downloads.thumbnail(id)
     )
     hardenDefaultSession()
     this.installMenu()

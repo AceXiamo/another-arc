@@ -1,17 +1,20 @@
 import { useEffect, useRef, useState } from 'react'
 import type { Locale, Translate } from '@shared/i18n'
-import { fileKind } from '@shared/file-kind'
+import { fileKind, type FileKind } from '@shared/file-kind'
 import type { DownloadState } from '@shared/types'
 import { displayHost } from '@shared/url'
 import { Icon, type IconName } from '../../components/Icon'
-import { FileIcon } from '../../components/Illustration'
+import { FileTile, Illustration } from '../../components/Illustration'
 import { formatBytes } from '../../lib/format'
 import { useLocale, useT } from '../../lib/i18n'
 import { send } from '../../lib/rpc'
 import { useBrowser } from '../../stores/browser'
-import { EmptyNote, PageLayout, SecondaryButton, SmallButton } from './PageLayout'
+import { PageLayout, SmallButton } from './PageLayout'
 
 const DAY = 86_400_000
+
+/** Kinds QuickLook draws a real thumbnail for. */
+const PREVIEWABLE: ReadonlySet<FileKind> = new Set(['image', 'video', 'pdf'])
 
 /** Bytes per second, smoothed over the progress updates (one every 250 ms). */
 function useSpeed(d: DownloadState): number | null {
@@ -67,6 +70,8 @@ function meta(d: DownloadState, speed: number | null, t: Translate, locale: Loca
   return parts
 }
 
+const files = (count: number, t: Translate) => t(count === 1 ? 'downloads.files.one' : 'downloads.files.other', { count })
+
 function RowButton({ icon, label, onClick, quiet }: { icon: IconName; label: string; onClick: () => void; quiet?: boolean }) {
   return (
     <button
@@ -82,6 +87,51 @@ function RowButton({ icon, label, onClick, quiet }: { icon: IconName; label: str
   )
 }
 
+/**
+ * The file type tile; a finished image, video or PDF fades its QuickLook
+ * thumbnail in over it, and keeps the tile if there is none (file moved).
+ */
+function Preview({ d, kind, dim }: { d: DownloadState; kind: FileKind; dim: boolean }) {
+  const [thumb, setThumb] = useState<'loading' | 'shown' | 'none'>('loading')
+  const wanted = d.status === 'completed' && PREVIEWABLE.has(kind) && thumb !== 'none'
+  const shown = wanted && thumb === 'shown'
+  return (
+    <FileTile kind={kind} covered={shown} className={dim ? 'opacity-45 saturate-0' : ''}>
+      {wanted && (
+        <img
+          src={`thumb://download/${encodeURIComponent(d.id)}?v=${d.endedAt ?? 0}`}
+          alt=""
+          loading="lazy"
+          decoding="async"
+          draggable={false}
+          onLoad={() => setThumb('shown')}
+          onError={() => setThumb('none')}
+          className={`absolute inset-0 h-full w-full object-cover transition-opacity duration-200 ease-out ${shown ? 'opacity-100' : 'opacity-0'}`}
+        />
+      )}
+      {shown && kind === 'video' && (
+        <span className="absolute bottom-1 left-1 grid h-4 w-4 place-items-center rounded-full bg-[rgb(0_0_0/0.45)] text-white backdrop-blur-sm">
+          <Icon name="play" size={8} strokeWidth={2.4} />
+        </span>
+      )}
+    </FileTile>
+  )
+}
+
+/** The name, cut in the middle when too long so the extension stays in view. */
+function FileName({ name }: { name: string }) {
+  const dot = name.lastIndexOf('.')
+  const ext = dot > 0 && name.length - dot <= 10 ? name.length - dot : 0
+  const tail = Math.min(name.length, ext + 6)
+  if (name.length - tail < 8) return <span className="min-w-0 truncate whitespace-pre">{name}</span>
+  return (
+    <span className="flex min-w-0">
+      <span className="min-w-0 truncate whitespace-pre">{name.slice(0, -tail)}</span>
+      <span className="shrink-0 whitespace-pre">{name.slice(-tail)}</span>
+    </span>
+  )
+}
+
 function DownloadRow({ d, showDate }: { d: DownloadState; showDate: boolean }) {
   const t = useT()
   const locale = useLocale()
@@ -90,12 +140,14 @@ function DownloadRow({ d, showDate }: { d: DownloadState; showDate: boolean }) {
   const active = d.status === 'progressing'
   const done = d.status === 'completed'
   const failed = d.status === 'cancelled' || d.status === 'interrupted'
+  const kind = fileKind(d.filename, d.mimeType)
   const source = d.url && !d.url.startsWith('data:') && !d.url.startsWith('blob:') ? displayHost(d.url, locale) : ''
   const when = new Date(d.endedAt ?? d.startedAt).toLocaleString(
     locale,
     showDate ? { month: 'short', day: 'numeric' } : { hour: '2-digit', minute: '2-digit' }
   )
   const parts = [...meta(d, speed, t, locale), ...(source ? [source] : []), ...(active ? [] : [when])]
+  const open = () => done && send('downloads.open', d.id)
   return (
     <div
       draggable={done}
@@ -105,18 +157,20 @@ function DownloadRow({ d, showDate }: { d: DownloadState; showDate: boolean }) {
         e.preventDefault()
         send('downloads.drag', d.id)
       }}
-      className="group flex items-center gap-3 py-2.5 pl-3 pr-2 first:rounded-t-[12px] last:rounded-b-[12px]"
+      className="group flex items-center gap-3 py-2.5 pl-2.5 pr-2 transition-colors duration-150 first:rounded-t-[14px] last:rounded-b-[14px] hover:bg-[var(--hover)]"
     >
-      <FileIcon kind={fileKind(d.filename, d.mimeType)} className={failed ? 'opacity-45 saturate-0' : ''} />
+      <button tabIndex={-1} onClick={open} className={`shrink-0 rounded-[10px] ${done ? '' : 'cursor-default'}`}>
+        <Preview d={d} kind={kind} dim={failed} />
+      </button>
       <div className="min-w-0 flex-1">
         <button
-          className={`block max-w-full truncate rounded-[4px] text-left text-[13.5px] ${
+          className={`flex max-w-full rounded-[4px] text-left text-[13px] font-medium text-[var(--text-1)] ${
             done ? 'hover:underline hover:decoration-[var(--ink-faint)] hover:underline-offset-2' : 'cursor-default'
           } ${failed ? 'text-[var(--text-3)] line-through decoration-[var(--ink-faint)]' : ''}`}
           title={d.filename}
-          onClick={() => done && send('downloads.open', d.id)}
+          onClick={open}
         >
-          {d.filename}
+          <FileName name={d.filename} />
         </button>
         <div className="mt-0.5 flex min-w-0 gap-1.5 text-[12px] tabular-nums text-[var(--text-3)]">
           {parts.map((p, i) => (
@@ -129,7 +183,7 @@ function DownloadRow({ d, showDate }: { d: DownloadState; showDate: boolean }) {
           ))}
         </div>
         {active && (
-          <div className="mt-2 h-1 overflow-hidden rounded-full bg-[var(--press)]">
+          <div className="mt-1.5 h-1 overflow-hidden rounded-full bg-[var(--press)]">
             <div
               className={`h-full w-full origin-left transition-transform duration-300 ease-out ${
                 d.paused ? 'bg-[var(--ink-faint)]' : d.totalBytes > 0 ? 'bg-[var(--accent-fill)]' : 'bg-[var(--accent-fill)] opacity-60'
@@ -143,7 +197,7 @@ function DownloadRow({ d, showDate }: { d: DownloadState; showDate: boolean }) {
         {active && !d.paused && <RowButton icon="pause" label={t('downloads.pause')} onClick={() => send('downloads.pause', d.id)} />}
         {active && d.paused && <RowButton icon="play" label={t('downloads.resume')} onClick={() => send('downloads.resume', d.id)} />}
         {active && <RowButton icon="close" label={t('common.cancel')} onClick={() => send('downloads.cancel', d.id)} />}
-        {done && <RowButton icon="folder" label={t('downloads.showInFinder')} onClick={() => send('downloads.reveal', d.id)} />}
+        {done && <RowButton quiet icon="folder" label={t('downloads.showInFinder')} onClick={() => send('downloads.reveal', d.id)} />}
         {failed && /^https?:/.test(d.url) && (
           <SmallButton onClick={() => send('downloads.retry', d.id)}>{t('downloads.retry')}</SmallButton>
         )}
@@ -165,38 +219,73 @@ function groups(list: DownloadState[]): Array<{ key: 'today' | 'yesterday' | 'ea
   return (['today', 'yesterday', 'earlier'] as const).filter((k) => out[k].length > 0).map((key) => ({ key, items: out[key] }))
 }
 
+/** Title banner: what is in the list, the folder, and the spot art in the space's color. */
+function Banner({ list }: { list: DownloadState[] }) {
+  const t = useT()
+  const finished = list.filter((d) => d.status === 'completed')
+  const active = list.filter((d) => d.status === 'progressing').length
+  const bytes = finished.reduce((sum, d) => sum + (d.totalBytes || d.receivedBytes), 0)
+  const summary =
+    list.length === 0
+      ? [t('downloads.emptyHint')]
+      : [files(finished.length, t), ...(bytes > 0 ? [formatBytes(bytes)] : []), ...(active ? [t('downloads.active', { count: active })] : [])]
+  return (
+    <header
+      className="@container relative isolate flex items-center overflow-hidden rounded-[16px] shadow-[var(--card-shadow)]"
+      style={{
+        background:
+          'radial-gradient(70% 120% at 92% 50%, color-mix(in oklch, var(--space) 16%, transparent), transparent 72%), linear-gradient(100deg, var(--surface-2) 30%, color-mix(in oklch, var(--space) 7%, var(--surface-2)))'
+      }}
+    >
+      <div className="flex min-w-0 flex-1 flex-col gap-5 py-6 pl-6 pr-4">
+        <div className="min-w-0">
+          <h1 className="truncate text-[24px] font-semibold leading-tight tracking-[-0.01em]">{t('page.downloads')}</h1>
+          <p className="mt-1 flex flex-wrap gap-x-1.5 text-[12.5px] tabular-nums text-[var(--text-2)]">
+            {summary.map((s, i) => (
+              <span key={i} className="flex gap-1.5">
+                {i > 0 && <span aria-hidden className="text-[var(--text-3)]">·</span>}
+                {s}
+              </span>
+            ))}
+          </p>
+        </div>
+        <div className="flex items-center gap-1.5">
+          <button
+            onClick={() => send('downloads.openFolder')}
+            className="flex h-[30px] shrink-0 items-center gap-1.5 rounded-[8px] bg-[var(--sb-active)] px-3 text-[12.5px] font-medium text-[var(--text)] shadow-[var(--active-shadow)] transition-[scale,filter] duration-150 ease-out hover:brightness-[1.03] active:scale-[0.96]"
+          >
+            <Icon name="folder" size={14} strokeWidth={1.8} />
+            {t('downloads.openFolder')}
+          </button>
+          {list.some((d) => d.status !== 'progressing') && (
+            <SmallButton onClick={() => send('downloads.clear')}>{t('downloads.clearCompleted')}</SmallButton>
+          )}
+        </div>
+      </div>
+      <Illustration name="downloads-hero" className="mr-9 @max-[420px]:hidden" />
+    </header>
+  )
+}
+
 export default function DownloadsPage() {
   const t = useT()
   const downloads = useBrowser((s) => s.downloads)
   const list = Object.values(downloads).sort((a, b) => b.startedAt - a.startedAt)
   return (
-    <PageLayout
-      title={t('page.downloads')}
-      actions={
-        <div className="flex items-center gap-1.5">
-          {list.some((d) => d.status !== 'progressing') && (
-            <SmallButton onClick={() => send('downloads.clear')}>{t('downloads.clearCompleted')}</SmallButton>
-          )}
-          <SecondaryButton icon="folder" onClick={() => send('downloads.openFolder')}>
-            {t('downloads.openFolder')}
-          </SecondaryButton>
-        </div>
-      }
-    >
-      {list.length === 0 ? (
-        <EmptyNote art="downloads" title={t('downloads.empty')} hint={t('downloads.emptyHint')} />
-      ) : (
-        groups(list).map(({ key, items }) => (
-          <section key={key} className="flex flex-col gap-2">
-            <h2 className="px-1 text-[12px] font-semibold text-[var(--text-2)]">{t(`downloads.${key}`)}</h2>
-            <div className="flex flex-col rounded-[12px] bg-[var(--surface-2)] shadow-[var(--card-shadow)] [&>*+*]:shadow-[inset_0_0.5px_0_var(--line)]">
-              {items.map((d) => (
-                <DownloadRow key={d.id} d={d} showDate={key === 'earlier'} />
-              ))}
-            </div>
-          </section>
-        ))
-      )}
+    <PageLayout title={t('page.downloads')} header={<Banner list={list} />}>
+      {groups(list).map(({ key, items }) => (
+        <section key={key} className="flex flex-col gap-2">
+          <h2 className="flex gap-1.5 px-1 text-[12px] font-semibold text-[var(--text-2)]">
+            {t(`downloads.${key}`)}
+            <span className="font-normal tabular-nums text-[var(--text-3)]">{items.length}</span>
+          </h2>
+          <div className="flex flex-col rounded-[14px] bg-[var(--surface-2)] shadow-[var(--card-shadow)] [&>*+*]:shadow-[inset_0_0.5px_0_var(--line)]">
+            {items.map((d) => (
+              <DownloadRow key={d.id} d={d} showDate={key === 'earlier'} />
+            ))}
+          </div>
+        </section>
+      ))}
     </PageLayout>
   )
 }

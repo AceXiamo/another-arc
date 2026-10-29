@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { existsSync, mkdirSync } from 'node:fs'
 import { mkdir, rm, writeFile } from 'node:fs/promises'
 import { basename, dirname, extname, join, relative, resolve } from 'node:path'
-import { app, dialog, shell, type DownloadItem, type Session, type WebContents } from 'electron'
+import { app, dialog, nativeImage, shell, type DownloadItem, type Session, type WebContents } from 'electron'
 import type { DownloadState, DownloadStatus } from '@shared/types'
 import type { Database } from '../persistence/database'
 import type { SettingsService } from '../settings/settings-service'
@@ -14,6 +14,14 @@ const KEEP_FINISHED = 200
 const START_TIMEOUT_MS = 60_000
 /** Longest URL kept in a download's state (data: URLs can be megabytes). */
 const MAX_URL = 8192
+/**
+ * Thumbnail box in points (QuickLook renders at the screen's scale). The list
+ * shows a 40pt square cropped to fill, so this covers aspect ratios up to 2:1
+ * without upscaling.
+ */
+const THUMB_PT = 80
+/** Recent thumbnails kept in memory (PNG, a few tens of KB each). */
+const KEEP_THUMBS = 48
 
 interface Row {
   id: string
@@ -87,6 +95,8 @@ export class DownloadManager {
   private readonly reservedPaths = new Set<string>()
   private readonly lastProgress = new Map<string, number>()
   private readonly attached = new WeakSet<Session>()
+  /** `id:endedAt` -> PNG, oldest first; a pending render is shared. */
+  private readonly thumbs = new Map<string, Promise<Buffer | null>>()
   private nextSeq: number
   private onProgress: ((fraction: number) => void) | null = null
   private onStart: ((state: DownloadState, asked: boolean) => void) | null = null
@@ -289,6 +299,28 @@ export class DownloadManager {
     if (!s?.savePath) return null
     const icon = await app.getFileIcon(s.savePath, { size }).catch(() => null)
     return icon && !icon.isEmpty() ? icon.toDataURL() : null
+  }
+
+  /** A finished file's QuickLook thumbnail as PNG, or null when there is none. */
+  thumbnail(id: string): Promise<Buffer | null> {
+    const s = this.states.get(id)
+    if (s?.status !== 'completed') return Promise.resolve(null)
+    const key = `${id}:${s.endedAt}`
+    let thumb = this.thumbs.get(key)
+    if (thumb) {
+      this.thumbs.delete(key)
+    } else {
+      thumb = nativeImage
+        .createThumbnailFromPath(s.savePath, { width: THUMB_PT, height: THUMB_PT })
+        .then((image) => (image.isEmpty() ? null : image.toPNG()))
+        .catch(() => null)
+      // A failure (file moved or deleted) is not remembered: it may come back.
+      void thumb.then((png) => png || this.thumbs.delete(key))
+      const oldest = this.thumbs.keys().next()
+      if (this.thumbs.size >= KEEP_THUMBS && !oldest.done) this.thumbs.delete(oldest.value)
+    }
+    this.thumbs.set(key, thumb)
+    return thumb
   }
 
   clearFinished(): void {
