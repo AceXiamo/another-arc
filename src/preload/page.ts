@@ -14,6 +14,8 @@ import './page-prompt'
 import './web-store'
 // The USER_SCRIPT world of chrome.userScripts (Tampermonkey & co).
 import './user-script-world'
+// Per-site switches that must act before the page's scripts run.
+import './site-settings'
 
 // Runs in every page, so it does as close to nothing as possible until a
 // sign-in field is touched: a handful of capturing listeners, no polling, no

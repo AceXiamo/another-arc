@@ -234,6 +234,15 @@ const MIGRATIONS: string[] = [
   ALTER TABLE downloads ADD COLUMN seq INTEGER;
   ALTER TABLE downloads ADD COLUMN initiator TEXT;
   UPDATE downloads SET seq = rowid;
+  `,
+  // v7 — per-site switches; a row means on.
+  `
+  CREATE TABLE site_settings (
+    origin TEXT NOT NULL,
+    setting TEXT NOT NULL,
+    updated_at INTEGER NOT NULL,
+    PRIMARY KEY (origin, setting)
+  );
   `
 ]
 

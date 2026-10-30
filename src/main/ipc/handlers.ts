@@ -10,6 +10,7 @@ import { isSavedTab } from '@shared/tabs'
 import { SPACE_APPEARANCES, THEME_LIMITS } from '@shared/theme'
 import { summarizeSidebar } from '../import/arc-sidebar'
 import { importArcSidebarWithDialogs, loadArcSidebar } from '../import/sidebar-import'
+import { SITE_SETTING_IDS } from '@shared/site-settings'
 import { INTERNAL_PAGES, isInternalUrl, SEARCH_ENGINES, type InternalPage } from '@shared/url'
 import type { SearchEngineId } from '@shared/types'
 import type { Browser } from '../app/browser'
@@ -593,5 +594,11 @@ export function registerHandlers(router: RpcRouter, b: Browser): void {
     'permissions.set',
     tuple(v.string({ max: 2048 }), v.string({ max: 64 }), v.oneOf(['allow', 'deny'] as const)),
     (_c, origin, permission, decision) => b.permissions.set(origin, permission, decision)
+  )
+
+  // -- site settings ------------------------------------------------------------
+  router.handle('siteSettings.list', tuple(v.string({ max: 2048 })), (_c, origin) => b.siteSettings.list(origin))
+  router.handle('siteSettings.set', tuple(v.string({ max: 2048 }), v.oneOf(SITE_SETTING_IDS), v.boolean()), (_c, origin, setting, on) =>
+    b.siteSettings.set(origin, setting, on)
   )
 }

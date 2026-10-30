@@ -1,9 +1,11 @@
 import { createContext, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import type { MessageKey } from '@shared/i18n'
+import type { SiteSettingId, SiteSettingValue } from '@shared/site-settings'
 import type { ExtensionInfo, PermissionDecision, SitePermission } from '@shared/types'
 import { isInternalUrl, originOf, securityLevel } from '@shared/url'
 import { Icon, type IconName } from '../../components/Icon'
+import { Toggle } from '../../components/Toggle'
 import { useT } from '../../lib/i18n'
 import { rpc, send } from '../../lib/rpc'
 import { useSurface } from '../../lib/surface'
@@ -30,6 +32,14 @@ const PERMISSIONS: Record<string, { label: MessageKey; icon: IconName }> = {
   'top-level-storage-access': { label: 'settings.permissions.storageAccess', icon: 'shield' },
   fileSystem: { label: 'settings.permissions.fileSystem', icon: 'folder' },
   openExternal: { label: 'settings.permissions.openExternal', icon: 'external' }
+}
+
+const SITE_SETTINGS: Record<SiteSettingId, { label: MessageKey; description: MessageKey; icon: IconName }> = {
+  cloudGameLowLatency: {
+    label: 'sidebar.site.cloudGameLowLatency',
+    description: 'sidebar.site.cloudGameLowLatencyDesc',
+    icon: 'bolt'
+  }
 }
 
 let dismissedAt = -Infinity
@@ -79,8 +89,8 @@ function useToWindow() {
 
 /**
  * Site controls (Arc's "site menu"): quick actions for the page, every
- * extension (pin one to keep it in the address pill), this site's remembered
- * permissions and its connection. It floats in a surface of its own, hanging
+ * extension (pin one to keep it in the address pill), this site's settings
+ * (its switches and remembered permissions) and its connection. It floats in a surface of its own, hanging
  * from the pill's controls button, so the page next to it is never covered or
  * repainted; clicking anywhere else (it loses focus) or Escape closes it.
  */
@@ -170,13 +180,24 @@ function PanelBody() {
   const state = useActionState(enabled.some((e) => e.hasAction))
   const origin = tab && !isInternalUrl(tab.url) ? originOf(tab.url) : null
   const [permissions, setPermissions] = useState<SitePermission[]>([])
+  const [switches, setSwitches] = useState<SiteSettingValue[]>([])
+  // What each switch was when the panel opened: the page loaded with those.
+  const [loaded, setLoaded] = useState<SiteSettingValue[]>([])
   useEffect(() => {
     let alive = true
-    if (origin) void rpc('permissions.list').then((all) => alive && setPermissions(all.filter((p) => p.origin === origin)))
+    if (origin) {
+      void rpc('permissions.list').then((all) => alive && setPermissions(all.filter((p) => p.origin === origin)))
+      void rpc('siteSettings.list', origin).then((list) => {
+        if (!alive) return
+        setSwitches(list)
+        setLoaded(list)
+      })
+    }
     return () => {
       alive = false
     }
   }, [origin])
+  const needsReload = switches.some((s) => loaded.find((l) => l.id === s.id)?.on !== s.on)
 
   const live = tab?.live === true
   const web = tab !== undefined && !isInternalUrl(tab.url)
@@ -256,10 +277,45 @@ function PanelBody() {
         </button>
       </div>
 
-      {origin && permissions.length > 0 && (
+      {origin && (
         <>
-          <SectionHeader title={t('sidebar.site.settings')} />
+          <SectionHeader title={t('sidebar.site.settings')}>
+            <button
+              onClick={() => {
+                close()
+                send('tabs.openInternal', 'settings')
+              }}
+              className="rounded-[5px] px-1 text-[12px] font-medium text-[var(--text-3)] hover:text-[var(--text-1)]"
+            >
+              {t('sidebar.site.manage')}
+            </button>
+          </SectionHeader>
+          {switches.length === 0 && permissions.length === 0 && (
+            <p className="px-1 text-[12px] leading-[15px] text-[var(--text-3)]">{t('sidebar.site.settingsEmpty')}</p>
+          )}
           <div className="flex flex-col">
+            {switches.map((s) => (
+              <SiteSwitchRow
+                key={s.id}
+                setting={s}
+                onChange={(on) => {
+                  send('siteSettings.set', origin, s.id, on)
+                  setSwitches((list) => list.map((x) => (x.id === s.id ? { ...x, on } : x)))
+                }}
+              />
+            ))}
+            {needsReload && (
+              <button
+                onClick={() => {
+                  close()
+                  if (tab) send('tabs.reload', tab.id, false)
+                }}
+                className="mx-1 mb-1 mt-0.5 flex h-8 items-center justify-center gap-1.5 rounded-[8px] bg-[var(--hover)] text-[12px] font-medium text-[var(--text-1)] transition-[scale,background-color] duration-150 ease-out hover:bg-[var(--press)] active:scale-[0.98]"
+              >
+                <Icon name="reload" size={13} strokeWidth={1.8} />
+                {t('sidebar.site.reloadToApply')}
+              </button>
+            )}
             {permissions.map((p) => (
               <PermissionRow
                 key={p.permission}
@@ -397,6 +453,27 @@ function ExtensionTile({ ext, icon, tabId }: { ext: ExtensionInfo; icon: React.R
           <Icon name="pin" size={11} strokeWidth={2} />
         </button>
       )}
+    </div>
+  )
+}
+
+function SiteSwitchRow({ setting, onChange }: { setting: SiteSettingValue; onChange: (on: boolean) => void }) {
+  const t = useT()
+  const meta = SITE_SETTINGS[setting.id]
+  return (
+    <div className="flex min-h-11 items-center gap-2.5 px-1.5 py-1">
+      <span
+        className={`grid h-7 w-7 shrink-0 place-items-center rounded-full ${
+          setting.on ? 'bg-[var(--accent-soft)] text-[var(--accent)]' : 'bg-[var(--hover)] text-[var(--ink)]'
+        }`}
+      >
+        <Icon name={meta.icon} size={15} />
+      </span>
+      <span className="flex min-w-0 flex-1 flex-col">
+        <span className="truncate text-[13px] text-[var(--text-1)]">{t(meta.label)}</span>
+        <span className="text-[12px] leading-[15px] text-[var(--text-3)]">{t(meta.description)}</span>
+      </span>
+      <Toggle checked={setting.on} onChange={onChange} label={t(meta.label)} />
     </div>
   )
 }

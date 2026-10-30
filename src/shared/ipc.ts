@@ -243,6 +243,11 @@ export interface ShellRpc {
   /** Change a remembered decision (site controls). */
   'permissions.set': (origin: string, permission: string, decision: PermissionDecision) => void
 
+  /** The switches this site is offered (site controls). */
+  'siteSettings.list': (origin: string) => import('./site-settings').SiteSettingValue[]
+  /** Takes effect the next time the site loads. */
+  'siteSettings.set': (origin: string, id: import('./site-settings').SiteSettingId, on: boolean) => void
+
   /** Answer a page's alert / confirm / prompt; `suppress` blocks further ones from that origin. */
   'pageDialogs.respond': (dialogId: string, accept: boolean, text: string, suppress: boolean) => void
 

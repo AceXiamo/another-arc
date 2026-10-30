@@ -38,6 +38,7 @@ import { Database } from '../persistence/database'
 import { Persister } from '../persistence/persister'
 import { SessionStore } from '../persistence/session-store'
 import { PermissionManager } from '../permissions/permission-manager'
+import { SiteSettings } from '../settings/site-settings'
 import { ProfileManager } from '../profiles/profile-manager'
 import { SettingsService } from '../settings/settings-service'
 import type { CommandId } from '../shortcuts/commands'
@@ -88,6 +89,7 @@ export class Browser {
   readonly downloads: DownloadManager
   readonly passwords: PasswordManager
   readonly permissions: PermissionManager
+  readonly siteSettings: SiteSettings
   readonly dialogs: PageDialogs
   readonly extensions: ExtensionManager
   readonly discarder: TabDiscarder
@@ -163,6 +165,7 @@ export class Browser {
         if (prompts.length > 0 && this.windowState.sidebarCollapsed) this.setSidebar({ collapsed: false })
       }
     })
+    this.siteSettings = new SiteSettings(this.db)
     this.dialogs = new PageDialogs({
       tabIdFor: (wc) => this.tabs.tabIdFor(wc),
       isShown: (wc) => this.window?.currentPage?.webContents === wc,

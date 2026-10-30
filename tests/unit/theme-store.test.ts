@@ -39,6 +39,7 @@ describe('space theme persistence', () => {
       ALTER TABLE history_urls DROP COLUMN favicon;
       ALTER TABLE downloads DROP COLUMN seq;
       ALTER TABLE downloads DROP COLUMN initiator;
+      DROP TABLE site_settings;
       PRAGMA user_version = 2;
       INSERT INTO profiles (id, name, partition, created_at) VALUES ('default', 'Default', 'persist:default', 0);
       INSERT INTO spaces (id, name, icon, color, sort_order, profile_id, active_tab_id, created_at)
@@ -49,7 +50,7 @@ describe('space theme persistence', () => {
     const db = new Database(path)
     try {
       expect((db.raw.prepare('PRAGMA user_version').get() as { user_version: number }).user_version).toBe(SCHEMA_VERSION)
-      expect(SCHEMA_VERSION).toBe(6)
+      expect(SCHEMA_VERSION).toBe(7)
       const [loaded] = new SessionStore(db).loadSpaces()
       expect(loaded).toMatchObject({ id: 's1', color: '#3b82f6', theme: DEFAULT_SPACE_THEME })
     } finally {
