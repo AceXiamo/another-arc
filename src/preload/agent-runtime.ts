@@ -1437,7 +1437,6 @@ globalThis.__arcAgentCreate = (start: number) => {
     return {
       x: point[0],
       y: point[1],
-      rect: box,
       label: describe(el),
       covered,
       disabled: field.disabled === true || el.getAttribute('aria-disabled') === 'true',
@@ -1498,7 +1497,6 @@ globalThis.__arcAgentCreate = (start: number) => {
     return {
       x,
       y,
-      rect: hit ? topRect(hit) : null,
       label: hit ? describe(hit) : 'nothing',
       covered: null,
       disabled: false,
@@ -1660,22 +1658,21 @@ globalThis.__arcAgentCreate = (start: number) => {
   // ---------------------------------------------------------------------------
   // What the user sees while an agent works (drawn only while the tab is on screen)
   //
-  // A rainbow glow breathes around the edges of the page for as long as an
-  // agent is at work in it; that is the only color. Everything else is sky
-  // blue and plain: a haloed pointer that carries the agent's name and what
-  // it is doing, a frame on what it acts on, a ring where it clicks, a scan
-  // line when it reads. Everything animates transform and opacity alone, so
-  // the page's compositor runs it without repainting or waiting on the page's
-  // own scripts, and the rainbow is a 96 px canvas the GPU scales and spins,
-  // never a page-sized gradient.
+  // A rainbow glow rests around the edges of the page for as long as an agent
+  // is at work in it, and lifts and flows each time the agent acts; that is
+  // the only color. Everything else is sky blue and plain: a haloed pointer,
+  // a ring where it clicks, a soft sheen when it reads. Everything animates
+  // transform and opacity alone, so the page's compositor runs it without
+  // repainting or waiting on the page's own scripts, and the rainbow is a
+  // 96 px canvas the GPU scales and spins, never a page-sized gradient.
   // ---------------------------------------------------------------------------
 
   /** Sky blue: the cursor and everything it does. */
   const SKY = '40 182 246'
   /** A touch deeper, for lines that must read on white. */
   const SKY_LINE = '14 160 230'
-  const SPECTRUM = ['#ff4d8d', '#ff8a3d', '#ffd23f', '#3ddc97', '#2ec5ff', '#4f6bff', '#b259ff', '#ff4d8d']
-  const FONT = '-apple-system, BlinkMacSystemFont, "Helvetica Neue", sans-serif'
+  /** Close in lightness (OKLCH L 0.68 to 0.79), so no hue stands out as a band of its own. */
+  const SPECTRUM = ['#f771a0', '#f1944f', '#d5b94d', '#5aca94', '#41bae4', '#7192f4', '#b37fea', '#f771a0']
   const SPRING = 'cubic-bezier(0.22, 1, 0.36, 1)'
   const SVG = 'http://www.w3.org/2000/svg'
   /** The cursor fades out after this long without moving. */
@@ -1686,13 +1683,12 @@ globalThis.__arcAgentCreate = (start: number) => {
     host: null as HTMLElement | null,
     root: null as ShadowRoot | null,
     aura: null as HTMLElement | null,
+    bloom: null as HTMLElement | null,
+    /** The rainbow's rotation, paused while the glow rests. */
+    spin: null as Animation | null,
     layer: null as HTMLElement | null,
     cursor: null as HTMLElement | null,
     pointer: null as HTMLElement | null,
-    tag: null as HTMLElement | null,
-    name: null as HTMLElement | null,
-    sep: null as HTMLElement | null,
-    status: null as HTMLElement | null,
     /** The cursor's endless animations, paused while it is hidden. */
     loops: [] as Animation[],
     shown: false,
@@ -1760,10 +1756,9 @@ globalThis.__arcAgentCreate = (start: number) => {
   }
 
   /** Build the overlay. Styles go through CSSOM, which page CSP does not police. */
-  function ensureOverlay(name: string): void {
+  function ensureOverlay(): void {
     if (overlay.host?.isConnected) {
       clearTimeout(overlay.teardownTimer)
-      if (overlay.name && overlay.name.textContent !== name) overlay.name.textContent = name
       return
     }
     teardown()
@@ -1802,50 +1797,10 @@ globalThis.__arcAgentCreate = (start: number) => {
     svgEl(svg, 'path', { d: arrow, fill: 'white', stroke: 'white', 'stroke-width': '5', 'stroke-linejoin': 'round' })
     svgEl(svg, 'path', { d: arrow, fill: `rgb(${SKY})`, stroke: `rgb(${SKY})`, 'stroke-width': '1.6', 'stroke-linejoin': 'round' })
 
-    // The name tag: a status light, the agent's name, and what it is doing.
-    const tag = div(cursor, {
-      position: 'absolute',
-      left: '18px',
-      top: '24px',
-      display: 'flex',
-      'align-items': 'center',
-      gap: '6px',
-      height: '24px',
-      padding: '0 10px 0 5px',
-      'box-sizing': 'border-box',
-      'border-radius': '12px',
-      background: `linear-gradient(135deg, rgb(${SKY} / 0.95), rgb(${SKY_LINE} / 0.95))`,
-      'backdrop-filter': 'blur(12px) saturate(1.4)',
-      border: '1px solid rgb(255 255 255 / 0.5)',
-      'box-shadow': `0 6px 18px -6px rgb(${SKY_LINE} / 0.75), inset 0 1px 0 rgb(255 255 255 / 0.4)`,
-      color: 'white',
-      'text-shadow': '0 1px 1px rgb(20 70 140 / 0.3)',
-      font: `600 11.5px/16px ${FONT}`,
-      'letter-spacing': '0.01em',
-      'white-space': 'nowrap',
-      '-webkit-font-smoothing': 'antialiased'
-    })
-    const light = div(tag, {
-      flex: 'none',
-      width: '7px',
-      height: '7px',
-      margin: '0 1px 0 3px',
-      'border-radius': '50%',
-      background: 'white',
-      'box-shadow': '0 0 6px 1px rgb(255 255 255 / 0.85)'
-    })
-    const pulse = calm
-      ? null
-      : light.animate([{ opacity: 1 }, { opacity: 0.45 }], { duration: 900, direction: 'alternate', iterations: Infinity, easing: 'ease-in-out' })
-    const nameEl = div(tag, {})
-    nameEl.textContent = name
-    const sep = div(tag, { display: 'none', width: '1px', height: '12px', background: 'rgb(255 255 255 / 0.4)' })
-    const status = div(tag, { display: 'none', 'font-weight': '500', opacity: '0.92', 'max-width': '260px', overflow: 'hidden', 'text-overflow': 'ellipsis' })
-
     document.documentElement.appendChild(host)
-    const loops = [breathe, pulse].filter((a): a is Animation => a !== null)
+    const loops = breathe ? [breathe] : []
     for (const a of loops) a.pause()
-    Object.assign(overlay, { host, root, layer, cursor, pointer, tag, name: nameEl, sep, status, loops, shown: false })
+    Object.assign(overlay, { host, root, layer, cursor, pointer, loops, shown: false })
   }
 
   /** With no glow and no cursor left, take the overlay out of the page. */
@@ -1861,50 +1816,49 @@ globalThis.__arcAgentCreate = (start: number) => {
     clearTimeout(overlay.idleTimer)
     clearTimeout(overlay.teardownTimer)
     overlay.host?.remove()
-    Object.assign(overlay, { host: null, root: null, aura: null, layer: null, cursor: null, pointer: null, tag: null, name: null, sep: null, status: null, loops: [], shown: false })
+    Object.assign(overlay, { host: null, root: null, aura: null, bloom: null, spin: null, layer: null, cursor: null, pointer: null, loops: [], shown: false })
   }
 
   // -- the glow around the page -----------------------------------------------
 
-  /** How strong the glow is on its way in from the page's edge: [alpha, px from the edge]. */
-  const GLOW: [number, number][] = [
-    [0.95, 0],
-    [0.7, 12],
-    [0.42, 32],
-    [0.2, 58],
-    [0.07, 84],
-    [0, 110]
-  ]
+  /** How far in the glow reaches, in px; most of what shows is in the first third. */
+  const GLOW_REACH = 72
+  /** Its strength at the page's edge right after the agent acts, and while it waits for the next call. */
+  const GLOW_PEAK = 0.6
+  const GLOW_REST = 0.24
+  /** How long it takes to rise after a call and settle again. */
+  const GLOW_SETTLE_MS = 3200
+  /** Gradient stops per edge: enough that the curve shows no facets. */
+  const GLOW_STOPS = 16
 
   /**
-   * Strong at the page's edge and gone a little way in, like an inset shadow:
-   * a strip along each side and a quarter circle in each corner, so it rounds
-   * the corners instead of piling up in them. The pieces never overlap.
+   * The glow on its way in, from 1 at the edge to 0 at the reach. It falls from
+   * the first pixel, so it has no width to read as a band around the page, and
+   * lands with no slope, so no line marks where it ends.
+   */
+  function falloff(t: number): number {
+    return (1 - t) ** 2.6
+  }
+
+  /**
+   * 1 − F(x)·F(y), with F how far the glow has faded along one axis: the shape
+   * of a blurred inset shadow. Its contours round off on their way in and the
+   * corners need no pieces of their own, so there are no seams or flat patches.
    */
   function glowMask(): Record<string, string> {
-    const reach = GLOW.at(-1)![1]
-    const alpha = (a: number) => `rgb(0 0 0 / ${a})`
-    const linear = (to: string) => `linear-gradient(to ${to}, ${GLOW.map(([a, d]) => `${alpha(a)} ${d}px`).join(', ')})`
-    // Centred on the corner piece's inner point, which is `reach` from both edges.
-    const radial = (at: string) =>
-      `radial-gradient(circle ${reach}px at ${at}, ${GLOW.toReversed().map(([a, d]) => `${alpha(a)} ${reach - d}px`).join(', ')})`
-    const strip = `calc(100% - ${2 * reach}px)`
-    const corner = `${reach}px ${reach}px`
-    const pieces = [
-      [linear('bottom'), `${strip} ${reach}px`, '50% 0'],
-      [linear('top'), `${strip} ${reach}px`, '50% 100%'],
-      [linear('right'), `${reach}px ${strip}`, '0 50%'],
-      [linear('left'), `${reach}px ${strip}`, '100% 50%'],
-      [radial('100% 100%'), corner, '0 0'],
-      [radial('0 100%'), corner, '100% 0'],
-      [radial('100% 0'), corner, '0 100%'],
-      [radial('0 0'), corner, '100% 100%']
-    ]
+    const faded = Array.from({ length: GLOW_STOPS + 1 }, (_, i) => {
+      const t = i / GLOW_STOPS
+      return [(1 - falloff(t)).toFixed(3), t * GLOW_REACH] as const
+    })
+    const stops = [
+      ...faded.map(([a, d]) => `rgb(0 0 0 / ${a}) ${d}px`),
+      ...faded.toReversed().map(([a, d]) => `rgb(0 0 0 / ${a}) calc(100% - ${d}px)`)
+    ].join(', ')
+    const axis = (to: string) => `linear-gradient(to ${to}, ${stops})`
     return {
-      'mask-image': pieces.map((p) => p[0]).join(', '),
-      'mask-size': pieces.map((p) => p[1]).join(', '),
-      'mask-position': pieces.map((p) => p[2]).join(', '),
-      'mask-repeat': 'no-repeat'
+      'mask-image': `linear-gradient(#000, #000), ${axis('right')}, ${axis('bottom')}`,
+      // From the bottom up: the two axes multiply, and that is cut out of the solid layer.
+      'mask-composite': 'subtract, intersect'
     }
   }
 
@@ -1912,22 +1866,43 @@ globalThis.__arcAgentCreate = (start: number) => {
     if (overlay.aura || !overlay.root) return
     const aura = document.createElement('div')
     css(aura, { position: 'absolute', inset: '0', overflow: 'hidden' })
-    // Under the highlights and the cursor.
+    // Under the ripples and the cursor.
     overlay.root.insertBefore(aura, overlay.root.firstChild)
-    // A bloom that breathes inward from the edge; the page view's own rounded
-    // corners trim it, so nothing is drawn outside the page.
-    const bloom = div(aura, { position: 'absolute', inset: '0', ...glowMask() })
-    rainbow(bloom, '150vmax', -11_000)
+    // The page view's own rounded corners trim it, so nothing is drawn outside the page.
+    const bloom = div(aura, { position: 'absolute', inset: '0', opacity: String(GLOW_REST), ...glowMask() })
+    const spin = rainbow(bloom, '150vmax', -16_000)
+    spin?.pause()
     aura.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 700, easing: 'ease-out' })
-    if (!calm) bloom.animate([{ opacity: 1 }, { opacity: 0.6 }], { duration: 1600, direction: 'alternate', iterations: Infinity, easing: 'ease-in-out' })
-    overlay.aura = aura
+    Object.assign(overlay, { aura, bloom, spin })
   }
 
   function hideAura(): void {
     const aura = overlay.aura
     if (!aura) return
-    overlay.aura = null
+    Object.assign(overlay, { aura: null, bloom: null, spin: null })
     dropAfter(aura, aura.animate([{ opacity: 1 }, { opacity: 0 }], { duration: 500, easing: 'ease-in', fill: 'forwards' }))
+  }
+
+  /**
+   * The agent just acted: the glow lifts and flows, then settles and holds still
+   * until the next call. While the agent thinks there is nothing moving at the
+   * edge of the user's eye, and nothing for the compositor to draw.
+   */
+  function liftAura(): void {
+    const { bloom, spin } = overlay
+    if (!bloom || calm) return
+    spin?.play()
+    const from = getComputedStyle(bloom).opacity
+    for (const a of bloom.getAnimations()) a.cancel()
+    const lift = bloom.animate(
+      [
+        { opacity: from, easing: 'ease-out' },
+        { opacity: GLOW_PEAK, offset: 0.1, easing: 'ease-in-out' },
+        { opacity: GLOW_REST }
+      ],
+      { duration: GLOW_SETTLE_MS }
+    )
+    lift.onfinish = () => spin?.pause()
   }
 
   /** An agent is (or no longer is) at work in this tab. The glow goes by itself after `ttl` without a word from main. */
@@ -1938,8 +1913,9 @@ globalThis.__arcAgentCreate = (start: number) => {
       hideCursor()
       return
     }
-    ensureOverlay(String(args.name || 'Agent'))
+    ensureOverlay()
     showAura()
+    liftAura()
     overlay.auraTimer = window.setTimeout(() => presence({ on: false }), Number(args.ttl) || 50_000)
   }
 
@@ -1971,35 +1947,15 @@ globalThis.__arcAgentCreate = (start: number) => {
     scheduleTeardown()
   }
 
-  function setStatus(text: string): void {
-    const { status, sep } = overlay
-    if (!status || !sep || status.textContent === text) return
-    status.textContent = text
-    status.style.display = sep.style.display = text ? 'block' : 'none'
-    if (text && !calm) status.animate([{ opacity: 0, transform: 'translateY(4px)' }, { opacity: 0.92, transform: 'none' }], { duration: 220, easing: SPRING })
-  }
-
-  /** The tag sits right of and below the pointer, and flips to stay on screen. */
-  function placeTag(x: number, y: number): void {
-    const tag = overlay.tag
-    if (!tag) return
-    const flipX = x + 18 + (tag.offsetWidth || 160) > innerWidth - 8
-    const flipY = y + 48 > innerHeight - 8
-    css(tag, { left: flipX ? 'auto' : '18px', right: flipX ? '10px' : 'auto', top: flipY ? 'auto' : '24px', bottom: flipY ? '10px' : 'auto' })
-  }
-
   async function moveCursor(args: Record<string, unknown>): Promise<void> {
-    ensureOverlay(String(args.name || 'Agent'))
+    ensureOverlay()
     const x = Number(args.x)
     const y = Number(args.y)
     const cursor = overlay.cursor!
-    setStatus(typeof args.status === 'string' ? args.status : '')
-    if (args.rect) highlight(args.rect as Box)
     const fromX = overlay.x < 0 ? x + 60 : overlay.x
     const fromY = overlay.y < 0 ? y + 80 : overlay.y
     overlay.x = x
     overlay.y = y
-    placeTag(x, y)
     const dx = x - fromX
     const duration = calm ? 0 : Math.round(Math.min(520, Math.max(180, Math.hypot(dx, y - fromY) / 2)))
     for (const a of cursor.getAnimations()) if (a.id === 'glide') a.cancel()
@@ -2013,46 +1969,12 @@ globalThis.__arcAgentCreate = (start: number) => {
     await Promise.race([glide.finished.catch(() => undefined), new Promise((r) => setTimeout(r, duration + 120))])
   }
 
-  /** Say what the agent is doing without moving the cursor (keys, typing into what has focus). */
-  function cursorStatus(args: Record<string, unknown>): void {
-    if (!overlay.cursor || overlay.x < 0) return
-    setStatus(String(args.status ?? ''))
-    placeTag(overlay.x, overlay.y)
-    showCursor()
+  /** Keep the cursor in view without moving it (keys, typing into what has focus). */
+  function holdCursor(): void {
+    if (overlay.cursor && overlay.x >= 0) showCursor()
   }
 
   // -- effects ------------------------------------------------------------------
-
-  /** A sky-blue frame around what the agent is about to act on. */
-  function highlight(box: Box): void {
-    const layer = overlay.layer
-    if (!layer) return
-    const pad = 4
-    const frame = div(layer, {
-      position: 'absolute',
-      left: `${box.x - pad}px`,
-      top: `${box.y - pad}px`,
-      width: `${box.width + pad * 2}px`,
-      height: `${box.height + pad * 2}px`,
-      'box-sizing': 'border-box',
-      'border-radius': `${Math.min(10, box.height / 2 + pad)}px`,
-      border: `1.5px solid rgb(${SKY_LINE} / 0.9)`,
-      background: `rgb(${SKY} / 0.1)`,
-      'box-shadow': `0 0 0 3px rgb(${SKY} / 0.16), 0 0 16px rgb(${SKY} / 0.35)`
-    })
-    dropAfter(
-      frame,
-      frame.animate(
-        [
-          { opacity: 0, transform: 'scale(1.06)', easing: SPRING },
-          { opacity: 1, transform: 'scale(1)', offset: 0.15 },
-          { opacity: 1, transform: 'scale(1)', offset: 0.75, easing: 'ease-in' },
-          { opacity: 0, transform: 'scale(1)' }
-        ],
-        { duration: calm ? 900 : 1500, fill: 'forwards' }
-      )
-    )
-  }
 
   /** A sky-blue ring spreading from where the agent clicked. */
   function clickRipple(args: Record<string, unknown>): void {
@@ -2078,40 +2000,46 @@ globalThis.__arcAgentCreate = (start: number) => {
     overlay.pointer?.animate([{ scale: '1' }, { scale: '0.82', offset: 0.35 }, { scale: '1' }], { duration: 240, easing: 'ease-out' })
   }
 
-  /** A scan line sweeps down the page while the agent reads it (at most every few seconds). */
-  function scan(args: Record<string, unknown>): void {
-    ensureOverlay(String(args.name || 'Agent'))
-    if (typeof args.status === 'string' && overlay.x >= 0) cursorStatus(args)
+  /** The sheen that passes over the page while the agent reads: its height in px, strength at its crest, and pace. */
+  const SHEEN_HEIGHT = 420
+  const SHEEN_PEAK = 0.17
+  const SHEEN_MS = 1500
+  /** It passes at most this often, so an agent reading in a row does not keep the page flickering. */
+  const SHEEN_EVERY_MS = 4000
+
+  /** Along the sheen, from its leading edge (0) to its tail (1): a quick swell and a long fade, with no crease to read as a line. */
+  function sheenAt(t: number): number {
+    const shape = (x: number) => x ** 1.4 * (1 - x) ** 6
+    return shape(t) / shape(1.4 / 7.4)
+  }
+
+  /** A soft sheen passes down the page while the agent reads it. */
+  function scan(): void {
+    ensureOverlay()
+    holdCursor()
     const now = Date.now()
-    if (!calm && now - overlay.lastScan > 2500) {
+    if (!calm && now - overlay.lastScan > SHEEN_EVERY_MS) {
       overlay.lastScan = now
-      const band = div(overlay.layer!, {
+      const stops = Array.from({ length: 25 }, (_, i) => `rgb(${SKY} / ${(SHEEN_PEAK * sheenAt(i / 24)).toFixed(3)}) ${(i / 24) * 100}%`)
+      const sheen = div(overlay.layer!, {
         position: 'absolute',
         left: '0',
         right: '0',
         top: '0',
-        height: '160px',
-        background: `linear-gradient(to bottom, rgb(${SKY} / 0), rgb(${SKY} / 0.05) 60%, rgb(${SKY} / 0.16))`
-      })
-      div(band, {
-        position: 'absolute',
-        left: '0',
-        right: '0',
-        bottom: '0',
-        height: '2px',
-        background: `linear-gradient(to right, rgb(${SKY} / 0), rgb(${SKY_LINE}) 30%, rgb(${SKY_LINE}) 70%, rgb(${SKY} / 0))`,
-        'box-shadow': `0 0 12px 1px rgb(${SKY} / 0.6)`
+        height: `${SHEEN_HEIGHT}px`,
+        background: `linear-gradient(to top, ${stops.join(', ')})`,
+        'mask-image': 'linear-gradient(to right, transparent, #000 20%, #000 80%, transparent)'
       })
       dropAfter(
-        band,
-        band.animate(
+        sheen,
+        sheen.animate(
           [
-            { transform: 'translateY(-160px)', opacity: 0 },
-            { opacity: 1, offset: 0.12 },
-            { opacity: 1, offset: 0.8 },
+            { transform: `translateY(${-SHEEN_HEIGHT}px)`, opacity: 0 },
+            { opacity: 1, offset: 0.22 },
+            { opacity: 1, offset: 0.68 },
             { transform: `translateY(${innerHeight}px)`, opacity: 0 }
           ],
-          { duration: 1200, easing: 'cubic-bezier(0.45, 0, 0.2, 1)', fill: 'forwards' }
+          { duration: SHEEN_MS, easing: 'cubic-bezier(0.37, 0, 0.63, 1)', fill: 'forwards' }
         )
       )
     }
@@ -2153,7 +2081,7 @@ globalThis.__arcAgentCreate = (start: number) => {
     describe: (args) => describe(resolve(args.ref)),
     presence,
     moveCursor,
-    cursorStatus,
+    holdCursor,
     clickRipple,
     scan,
     overlayVisible

@@ -975,8 +975,7 @@ export class Browser {
           history: this.history,
           dialogs: this.dialogs,
           window: () => this.window,
-          token: () => this.agentToken,
-          t: (key, params) => this.t(key, params)
+          token: () => this.agentToken
         })
       }
       await this.agent.start(agentPort)

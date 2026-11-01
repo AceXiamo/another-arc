@@ -29,18 +29,7 @@ const en = {
   'agent.settings.minutesAgo': '{count} min ago',
 
   // Sidebar
-  'agent.tab.working': 'An agent is working in this tab',
-
-  // The agent's cursor, over the page ({target} is what it acts on, may be empty)
-  'agent.cursor.click': 'Clicking {target}',
-  'agent.cursor.hover': 'Pointing at {target}',
-  'agent.cursor.type': 'Typing in {target}',
-  'agent.cursor.fill': 'Filling in {target}',
-  'agent.cursor.drag': 'Dragging {target}',
-  'agent.cursor.scroll': 'Scrolling',
-  'agent.cursor.key': 'Pressing {target}',
-  'agent.cursor.read': 'Reading the page',
-  'agent.cursor.find': 'Looking for {target}'
+  'agent.tab.working': 'An agent is working in this tab'
 }
 
 export default en

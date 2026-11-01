@@ -29,17 +29,7 @@ const zh: typeof en = {
   'agent.settings.justNow': '刚刚',
   'agent.settings.minutesAgo': '{count} 分钟前',
 
-  'agent.tab.working': '有 Agent 正在这个标签页里工作',
-
-  'agent.cursor.click': '点击 {target}',
-  'agent.cursor.hover': '指向 {target}',
-  'agent.cursor.type': '输入到 {target}',
-  'agent.cursor.fill': '填写 {target}',
-  'agent.cursor.drag': '拖动 {target}',
-  'agent.cursor.scroll': '滚动页面',
-  'agent.cursor.key': '按下 {target}',
-  'agent.cursor.read': '阅读页面',
-  'agent.cursor.find': '查找 {target}'
+  'agent.tab.working': '有 Agent 正在这个标签页里工作'
 }
 
 export default zh

@@ -35,9 +35,6 @@ const FIRST_FRAME_MS = 500
  */
 const PRESENCE_TTL_MS = 50_000
 
-/** What the agent's cursor says it is doing. */
-export type CursorVerb = 'click' | 'hover' | 'type' | 'fill' | 'drag' | 'scroll' | 'key' | 'read' | 'find'
-
 export interface Box {
   x: number
   y: number
@@ -49,7 +46,6 @@ export interface Box {
 export interface Target {
   x: number
   y: number
-  rect: Box | null
   label: string
   covered: string | null
   disabled: boolean
@@ -94,8 +90,6 @@ export interface DriverHost {
   suppressContextMenu(wc: WebContents, ms: number): void
   /** The alert / confirm / prompt the page is blocked on, if any. */
   pendingDialog(): PageDialog | undefined
-  /** What the cursor's tag says, in the user's language ("Clicking “Sign in”"). */
-  cursorText(verb: CursorVerb, target: string): string
 }
 
 let runtimeSource: string | null = null
@@ -284,8 +278,6 @@ export class TabDriver {
   private network: Map<string, NetworkEntry> | null = null
   private networkSince = 0
   private chooser: { backendNodeId: number; multiple: boolean } | null = null
-  /** Name on the cursor: the agent acting right now. */
-  actor = 'Agent'
   /** Actions on this tab run one after another, even when an agent sends them in parallel. */
   private queue: Promise<unknown> = Promise.resolve()
   private chooserTimer: NodeJS.Timeout | null = null
@@ -408,24 +400,22 @@ export class TabDriver {
 
   // -- what the user sees -----------------------------------------------------------
 
-  private async showCursor(t: Target, verb: CursorVerb): Promise<void> {
-    if (!this.host.isShown()) return
-    const status = this.host.cursorText(verb, targetName(t.label))
-    await this.call('moveCursor', { x: t.x, y: t.y, rect: t.rect, name: this.actor, status }).catch(() => undefined)
+  private async showCursor(at: { x: number; y: number }): Promise<void> {
+    if (this.host.isShown()) await this.call('moveCursor', { x: at.x, y: at.y }).catch(() => undefined)
   }
 
   private ripple(t: Target): void {
     if (this.host.isShown()) void this.call('clickRipple', { x: t.x, y: t.y }).catch(() => undefined)
   }
 
-  /** Tell the user what the agent is doing where its cursor already is. */
-  say(verb: CursorVerb, target = ''): void {
-    if (this.host.isShown()) void this.call('cursorStatus', { status: this.host.cursorText(verb, target) }).catch(() => undefined)
+  /** Keep the cursor in view where it already is, for what does not move it (keys, typing into what has focus). */
+  holdCursor(): void {
+    if (this.host.isShown()) void this.call('holdCursor', {}).catch(() => undefined)
   }
 
-  /** Reading: a scan line sweeps the page (the tag says so if the cursor is out). */
-  scan(verb: 'read' | 'find', target = ''): void {
-    if (this.host.isShown()) void this.call('scan', { name: this.actor, status: this.host.cursorText(verb, target) }).catch(() => undefined)
+  /** Reading: a soft sheen sweeps the page. */
+  scan(): void {
+    if (this.host.isShown()) void this.call('scan', {}).catch(() => undefined)
   }
 
   /**
@@ -437,7 +427,7 @@ export class TabDriver {
     if (!this.alive) return
     if (on) {
       if (this.host.isShown() && !this.host.pendingDialog()) {
-        void this.call('presence', { on: true, name: this.actor, ttl: PRESENCE_TTL_MS }).catch(() => undefined)
+        void this.call('presence', { on: true, ttl: PRESENCE_TTL_MS }).catch(() => undefined)
       }
       return
     }
@@ -459,11 +449,11 @@ export class TabDriver {
 
   async click(
     t: Target,
-    opts: { button?: 'left' | 'right' | 'middle'; count?: number; modifiers?: string[]; verb?: CursorVerb } = {}
+    opts: { button?: 'left' | 'right' | 'middle'; count?: number; modifiers?: string[] } = {}
   ): Promise<void> {
     const button = opts.button ?? 'left'
     const modifiers = opts.modifiers ?? []
-    await this.showCursor(t, opts.verb ?? 'click')
+    await this.showCursor(t)
     if (button === 'right') this.host.suppressContextMenu(this.wc, 1500)
     // File pickers would open a native dialog nobody is there to answer: catch them.
     await this.interceptFileChooser(true)
@@ -475,13 +465,13 @@ export class TabDriver {
     this.ripple(t)
   }
 
-  async hover(t: Target, verb: CursorVerb = 'hover'): Promise<void> {
-    await this.showCursor(t, verb)
+  async hover(t: Target): Promise<void> {
+    await this.showCursor(t)
     this.mouse('mouseMove', t.x, t.y)
   }
 
   async drag(from: Target, to: Target): Promise<void> {
-    await this.showCursor(from, 'drag')
+    await this.showCursor(from)
     this.mouse('mouseMove', from.x, from.y)
     this.mouse('mouseDown', from.x, from.y, { button: 'left', clickCount: 1 })
     const steps = 12
@@ -491,7 +481,7 @@ export class TabDriver {
       this.mouse('mouseMove', x, y, { button: 'left', modifiers: ['leftButtonDown'] })
       await sleep(16)
     }
-    await this.showCursor({ ...to, rect: null }, 'drag')
+    await this.showCursor(to)
     this.mouse('mouseUp', to.x, to.y, { button: 'left', clickCount: 1 })
   }
 
@@ -499,7 +489,7 @@ export class TabDriver {
   async scroll(at: { x: number; y: number }, dx: number, dy: number) {
     type State = { container: string | null; top: number; left: number; height: number; view: number }
     const before = await this.call<State>('scrollState', at)
-    await this.showCursor({ x: at.x, y: at.y, rect: null, label: '', covered: null, disabled: false, file: false }, 'scroll')
+    await this.showCursor(at)
     const zoom = this.wc.getZoomFactor()
     this.wc.sendInputEvent({
       type: 'mouseWheel',
@@ -879,19 +869,6 @@ export class TabDriver {
     this.debuggerAttached = false
     this.network = null
   }
-}
-
-/** The name in a target's label (`button "Sign in" [e12]` → “Sign in”), short enough for the cursor's tag. */
-export function targetName(label: string): string {
-  const quoted = /"((?:[^"\\]|\\.)*)"/.exec(label)?.[1]
-  if (quoted === undefined) return ''
-  let name: string
-  try {
-    name = JSON.parse(`"${quoted}"`) as string
-  } catch {
-    name = quoted
-  }
-  return `“${name.length > 32 ? `${name.slice(0, 31)}…` : name}”`
 }
 
 export function pushConsole(buffer: ConsoleEntry[], entry: ConsoleEntry): void {

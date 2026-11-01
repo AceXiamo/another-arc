@@ -2,8 +2,8 @@ import type { HistoryService } from '../history/history-service'
 import type { PageDialogs } from '../tabs/page-dialogs'
 import type { TabData } from '../tabs/model'
 import type { TabManager } from '../tabs/tab-manager'
-import { textResult, ToolError, type JsonSchema, type McpClientInfo, type McpTool, type McpToolResult } from './mcp-server'
-import { targetName, waitForLoad, type TabDriver, type Target } from './tab-driver'
+import { textResult, ToolError, type JsonSchema, type McpTool, type McpToolResult } from './mcp-server'
+import { waitForLoad, type TabDriver, type Target } from './tab-driver'
 
 // The tools agents see. Descriptions are written for a language model:
 // what the tool is for, what comes back, and how it connects to the others.
@@ -15,9 +15,9 @@ export interface ToolDeps {
   /** A tab by id or unique prefix; the tab the user is looking at when omitted. */
   resolveTab(id: string | undefined): TabData
   /** The tab's driver: woken, loaded, sized and marked as agent-driven. */
-  driver(id: string | undefined, client: McpClientInfo): Promise<TabDriver>
+  driver(id: string | undefined): Promise<TabDriver>
   /** Open a tab for an agent (network recorded from its first request). */
-  openTab(input: string, activate: boolean, client: McpClientInfo): Promise<TabData>
+  openTab(input: string, activate: boolean): Promise<TabData>
   shortId(id: string): string
   describeTab(tab: TabData): string
   listTabs(): string
@@ -92,8 +92,8 @@ export function createTools(deps: ToolDeps): McpTool[] {
         'Pass activate: true when the user wants to see it right away. Returns the new tab id; use it for later calls.',
       inputSchema: object({ url: { type: 'string', description: 'URL or search words.' }, activate: { type: 'boolean' } }, ['url']),
       annotations: { openWorldHint: true },
-      run: async (args, client) => {
-        const tab = await deps.openTab(String(args.url), args.activate === true, client)
+      run: async (args) => {
+        const tab = await deps.openTab(String(args.url), args.activate === true)
         return textResult(`Opened ${deps.describeTab(tabs.model.getTab(tab.id) ?? tab)}${args.activate ? '' : ' in the background'}.`)
       }
     },
@@ -128,8 +128,8 @@ export function createTools(deps: ToolDeps): McpTool[] {
         'Load a URL (or search words) in a tab, or go "back", "forward" or "reload", and wait for the page to load.',
       inputSchema: object({ url: { type: 'string', description: 'URL, search words, or back / forward / reload.' }, tabId }, ['url']),
       annotations: { openWorldHint: true },
-      run: async (args, client) => {
-        const driver = await deps.driver(str(args.tabId), client)
+      run: async (args) => {
+        const driver = await deps.driver(str(args.tabId))
         const id = driver.tabId
         const url = String(args.url).trim()
         const before = driver.wc.getURL()
@@ -176,14 +176,14 @@ export function createTools(deps: ToolDeps): McpTool[] {
         maxChars: { type: 'integer', minimum: 1000, maximum: 200_000, description: 'Default 20000.' }
       }),
       annotations: { readOnlyHint: true },
-      run: async (args, client) => {
-        const driver = await deps.driver(str(args.tabId), client)
+      run: async (args) => {
+        const driver = await deps.driver(str(args.tabId))
         if (await driver.call<boolean>('isPdf').catch(() => false)) {
           return textResult(`This tab shows a PDF: ${driver.wc.getURL()}\nThe browser cannot extract its text; download it (e.g. curl -L) and read it with a PDF tool.`)
         }
         const offset = num(args.offset, 0)
         const query = str(args.query)
-        driver.scan(query ? 'find' : 'read', query ? targetName(JSON.stringify(query)) : '')
+        driver.scan()
         const page = await driver.call<{ text: string; total: number; sections: Array<{ title: string; offset: number }> }>('readPage', {
           full: args.full === true,
           query,
@@ -221,9 +221,9 @@ export function createTools(deps: ToolDeps): McpTool[] {
         maxChars: { type: 'integer', minimum: 2000, maximum: 400_000, description: 'Size budget: off-screen parts fold to fit it. Default 12000 (24000 with ref).' }
       }),
       annotations: { readOnlyHint: true },
-      run: async (args, client) => {
-        const driver = await deps.driver(str(args.tabId), client)
-        driver.scan('read')
+      run: async (args) => {
+        const driver = await deps.driver(str(args.tabId))
+        driver.scan()
         const text = await driver.call<string>('snapshot', {
           interactiveOnly: args.interactiveOnly === true,
           viewportOnly: args.viewportOnly === true,
@@ -254,9 +254,9 @@ export function createTools(deps: ToolDeps): McpTool[] {
         ['query']
       ),
       annotations: { readOnlyHint: true },
-      run: async (args, client) => {
-        const driver = await deps.driver(str(args.tabId), client)
-        driver.scan('find', targetName(JSON.stringify(String(args.query))))
+      run: async (args) => {
+        const driver = await deps.driver(str(args.tabId))
+        driver.scan()
         return textResult(await driver.call<string>('find', { query: String(args.query), role: str(args.role) }))
       }
     },
@@ -268,8 +268,8 @@ export function createTools(deps: ToolDeps): McpTool[] {
         'canvases, maps and anything a snapshot cannot describe. click / hover / drag accept x, y in its coordinates.',
       inputSchema: object({ tabId, ref, format: { type: 'string', enum: ['jpeg', 'png'], description: 'Default jpeg.' } }),
       annotations: { readOnlyHint: true },
-      run: async (args, client) => {
-        const driver = await deps.driver(str(args.tabId), client)
+      run: async (args) => {
+        const driver = await deps.driver(str(args.tabId))
         const shot = await driver.screenshot({ ref: str(args.ref), format: args.format === 'png' ? 'png' : 'jpeg' })
         return { content: [{ type: 'image', data: shot.data, mimeType: shot.mimeType }, { type: 'text', text: shot.text }] }
       }
@@ -292,8 +292,8 @@ export function createTools(deps: ToolDeps): McpTool[] {
         modifiers: { type: 'array', items: { type: 'string', enum: ['Meta', 'Control', 'Alt', 'Shift'] }, description: 'e.g. ["Meta"] opens a link in a new tab.' },
         force: { type: 'boolean', description: 'Click even if the element is covered.' }
       }),
-      run: async (args, client) => {
-        const driver = await deps.driver(str(args.tabId), client)
+      run: async (args) => {
+        const driver = await deps.driver(str(args.tabId))
         const t = await driver.target(args)
         if (t.covered && args.force !== true) throw coveredError(t)
         if (t.file) throw new ToolError(`${t.label} is a file input: use upload_file with its ref instead of clicking it`)
@@ -312,8 +312,8 @@ export function createTools(deps: ToolDeps): McpTool[] {
       title: 'Hover',
       description: 'Move the mouse over an element (ref) or a point (x, y), to open hover menus or tooltips.',
       inputSchema: object({ ref, x, y, tabId }),
-      run: async (args, client) => {
-        const driver = await deps.driver(str(args.tabId), client)
+      run: async (args) => {
+        const driver = await deps.driver(str(args.tabId))
         const t = await driver.target(args)
         await driver.hover(t)
         return textResult(`Hovering over ${t.label}.`)
@@ -336,8 +336,8 @@ export function createTools(deps: ToolDeps): McpTool[] {
         },
         ['text']
       ),
-      run: async (args, client) => {
-        const driver = await deps.driver(str(args.tabId), client)
+      run: async (args) => {
+        const driver = await deps.driver(str(args.tabId))
         const text = String(args.text)
         return act(driver, async () => {
           let label = 'the focused element'
@@ -345,12 +345,12 @@ export function createTools(deps: ToolDeps): McpTool[] {
           if (r) {
             const t = await driver.target({ ref: r })
             label = t.label
-            if (!t.covered) await driver.click(t, { verb: 'type' })
+            if (!t.covered) await driver.click(t)
           }
           const focus = await driver.call<{ kind: string; label: string }>('focusField', { ref: r, mode: args.clear ? 'select' : 'end' })
           if (!r) {
             label = focus.label
-            driver.say('type', targetName(label))
+            driver.holdCursor()
           }
           if (args.clear && text === '') driver.wc.delete()
           else await driver.typeText(text, args.slowly === true)
@@ -376,8 +376,8 @@ export function createTools(deps: ToolDeps): McpTool[] {
         },
         ['fields']
       ),
-      run: async (args, client) => {
-        const driver = await deps.driver(str(args.tabId), client)
+      run: async (args) => {
+        const driver = await deps.driver(str(args.tabId))
         const fields = args.fields as Array<{ ref: string; value: string }>
         return act(driver, async () => {
           const done: string[] = []
@@ -388,11 +388,11 @@ export function createTools(deps: ToolDeps): McpTool[] {
             } else if (plan.action === 'click') {
               const t = await driver.target({ ref: field.ref })
               if (t.covered) throw coveredError(t)
-              await driver.click(t, { verb: 'fill' })
+              await driver.click(t)
               done.push(`${plan.label} → ${field.value}`)
             } else {
               const t = await driver.target({ ref: field.ref })
-              if (!t.covered) await driver.hover(t, 'fill')
+              if (!t.covered) await driver.hover(t)
               await driver.call('focusField', { ref: field.ref, mode: 'select' })
               if (field.value === '') driver.wc.delete()
               else await driver.typeText(field.value)
@@ -410,10 +410,10 @@ export function createTools(deps: ToolDeps): McpTool[] {
         'Press a key or shortcut in the page: Enter, Escape, Tab, Backspace, ArrowDown, PageDown, Space, a letter, ' +
         'or combinations like Shift+Tab, Control+Enter, Meta+K. Meta+A / C / X / V / Z run the edit command (select all, copy…).',
       inputSchema: object({ key: { type: 'string' }, count: { type: 'integer', minimum: 1, maximum: 50 }, tabId }, ['key']),
-      run: async (args, client) => {
-        const driver = await deps.driver(str(args.tabId), client)
+      run: async (args) => {
+        const driver = await deps.driver(str(args.tabId))
         const count = num(args.count, 1)
-        driver.say('key', String(args.key))
+        driver.holdCursor()
         return act(driver, async () => {
           await driver.pressKey(String(args.key), count)
           return `Pressed ${String(args.key)}${count > 1 ? ` ×${count}` : ''}.`
@@ -434,8 +434,8 @@ export function createTools(deps: ToolDeps): McpTool[] {
         amount: { type: 'number', minimum: 1 },
         tabId
       }),
-      run: async (args, client) => {
-        const driver = await deps.driver(str(args.tabId), client)
+      run: async (args) => {
+        const driver = await deps.driver(str(args.tabId))
         const direction = str(args.direction)
         if (str(args.ref) && !direction) {
           const t = await driver.target({ ref: args.ref })
@@ -476,8 +476,8 @@ export function createTools(deps: ToolDeps): McpTool[] {
         toY: y,
         tabId
       }),
-      run: async (args, client) => {
-        const driver = await deps.driver(str(args.tabId), client)
+      run: async (args) => {
+        const driver = await deps.driver(str(args.tabId))
         const from = await driver.target({ ref: args.fromRef, x: args.fromX, y: args.fromY })
         const to = await driver.target({ ref: args.toRef, x: args.toX, y: args.toY })
         return act(driver, async () => {
@@ -493,8 +493,8 @@ export function createTools(deps: ToolDeps): McpTool[] {
         'Choose files for a file input (ref of the input, shown as type=file, or of the upload button around it). ' +
         'Without ref, answers the file chooser a click just opened. Paths must be absolute.',
       inputSchema: object({ paths: { type: 'array', items: { type: 'string' } }, ref, tabId }, ['paths']),
-      run: async (args, client) => {
-        const driver = await deps.driver(str(args.tabId), client)
+      run: async (args) => {
+        const driver = await deps.driver(str(args.tabId))
         const paths = (args.paths as unknown[]).map(String)
         if (paths.length === 0) throw new ToolError('Pass at least one path')
         return act(driver, () => driver.upload(str(args.ref), paths))
@@ -507,14 +507,14 @@ export function createTools(deps: ToolDeps): McpTool[] {
         'Answer the alert, confirm or prompt a page is waiting on (actions report when one opens; the page is frozen until it is answered). ' +
         'accept: true is OK, false is Cancel; text is what to type into a prompt. Without tabId: the tab whose dialog is open.',
       inputSchema: object({ accept: { type: 'boolean' }, text: { type: 'string' }, tabId }, ['accept']),
-      run: async (args, client) => {
+      run: async (args) => {
         const open = deps.dialogs.list()
         const id = str(args.tabId)
         const dialog = id
           ? open.find((d) => d.tabId === deps.resolveTab(id).id)
           : (open.find((d) => d.tabId === tabs.model.activeTab()?.id) ?? (open.length === 1 ? open[0] : undefined))
         if (!dialog) throw new ToolError(open.length > 1 ? 'Several tabs have a dialog open; pass tabId' : 'No dialog is open there')
-        const driver = await deps.driver(dialog.tabId, client)
+        const driver = await deps.driver(dialog.tabId)
         const accept = args.accept === true
         return act(driver, async () => {
           deps.dialogs.respond(dialog.id, accept, str(args.text) ?? dialog.defaultText, false)
@@ -537,8 +537,8 @@ export function createTools(deps: ToolDeps): McpTool[] {
         seconds: { type: 'number', minimum: 0, maximum: 60, description: 'Wait this long (alone), or the time limit (default 10).' },
         tabId
       }),
-      run: async (args, client) => {
-        const driver = await deps.driver(str(args.tabId), client)
+      run: async (args) => {
+        const driver = await deps.driver(str(args.tabId))
         const text = str(args.text)
         const gone = str(args.textGone)
         const refGone = str(args.refGone)
@@ -571,8 +571,8 @@ export function createTools(deps: ToolDeps): McpTool[] {
         'An expression returns its value; with several statements the last line\'s value is returned (or use return). await works.',
       inputSchema: object({ script: { type: 'string' }, tabId }, ['script']),
       annotations: { destructiveHint: true },
-      run: async (args, client) => {
-        const driver = await deps.driver(str(args.tabId), client)
+      run: async (args) => {
+        const driver = await deps.driver(str(args.tabId))
         const result = await driver.evaluate(String(args.script))
         return textResult(result.ok ? result.text : `The script threw: ${result.text}`, !result.ok)
       }
@@ -590,8 +590,8 @@ export function createTools(deps: ToolDeps): McpTool[] {
         clear: { type: 'boolean', description: 'Clear after reading.' }
       }),
       annotations: { readOnlyHint: true },
-      run: async (args, client) => {
-        const driver = await deps.driver(str(args.tabId), client)
+      run: async (args) => {
+        const driver = await deps.driver(str(args.tabId))
         const order = ['debug', 'info', 'warning', 'error']
         const min = order.indexOf(str(args.level) ?? 'debug')
         const pattern = str(args.pattern)?.toLowerCase()
@@ -626,8 +626,8 @@ export function createTools(deps: ToolDeps): McpTool[] {
         clear: { type: 'boolean' }
       }),
       annotations: { readOnlyHint: true },
-      run: async (args, client) => {
-        const driver = await deps.driver(str(args.tabId), client)
+      run: async (args) => {
+        const driver = await deps.driver(str(args.tabId))
         const requestId = str(args.requestId)
         if (requestId) return textResult(await driver.networkDetail(requestId))
         if (!driver.recordingNetwork) {

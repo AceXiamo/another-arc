@@ -1,6 +1,5 @@
 import { app, type WebContents } from 'electron'
 import { agentUrl, type AgentInfo } from '@shared/agent'
-import type { MessageKey, Translate } from '@shared/i18n'
 import type { TabId } from '@shared/types'
 import { fallbackTitle, isInternalUrl } from '@shared/url'
 import { isSavedTab } from '@shared/tabs'
@@ -9,8 +8,8 @@ import type { PageDialogs } from '../tabs/page-dialogs'
 import type { TabData } from '../tabs/model'
 import type { TabManager } from '../tabs/tab-manager'
 import type { BrowserWindowController } from '../windows/browser-window'
-import { McpHttpServer, ToolError, type McpClientInfo } from './mcp-server'
-import { pushConsole, TabDriver, waitForLoad, type ConsoleEntry, type CursorVerb } from './tab-driver'
+import { McpHttpServer, ToolError } from './mcp-server'
+import { pushConsole, TabDriver, waitForLoad, type ConsoleEntry } from './tab-driver'
 import { AGENT_INSTRUCTIONS, createTools } from './tools'
 
 // Agents over MCP. Loaded only once the user turns agents on in Settings
@@ -28,7 +27,6 @@ export interface AgentHost {
   window(): BrowserWindowController | null
   token(): string
   /** The user's language, for what the agent's cursor says. */
-  t: Translate
 }
 
 export class AgentService {
@@ -61,8 +59,8 @@ export class AgentService {
         history: this.host.history,
         resolveTab: (id) => this.resolveTab(id),
         dialogs: this.host.dialogs,
-        driver: (id, client) => this.driver(id, client),
-        openTab: (input, activate, client) => this.openTab(input, activate, client),
+        driver: (id) => this.driver(id),
+        openTab: (input, activate) => this.openTab(input, activate),
         shortId,
         describeTab: (tab) => this.describeTab(tab),
         listTabs: () => this.listTabs()
@@ -197,7 +195,7 @@ export class AgentService {
     throw new ToolError(`No tab "${id}". Call list_tabs for current ids.`)
   }
 
-  async driver(id: string | undefined, client: McpClientInfo): Promise<TabDriver> {
+  async driver(id: string | undefined): Promise<TabDriver> {
     const tab = this.resolveTab(id)
     if (isInternalUrl(tab.url)) {
       throw new ToolError(`Tab ${shortId(tab.id)} shows a browser page (${tab.url}), not a web page. Open a web page with open_tab or navigate.`)
@@ -211,7 +209,6 @@ export class AgentService {
       driver = new TabDriver(tab.id, rt.view, this.driverHost(tab.id, rt.view), this.refsFor(tab.id), this.consoleFor(tab.id))
       this.drivers.set(tab.id, driver)
     }
-    driver.actor = client.name || 'Agent'
     driver.ensureSized()
     // A background tab is hidden: wake it first, so it also loads unthrottled.
     const awake = driver.wake()
@@ -224,7 +221,7 @@ export class AgentService {
     return driver
   }
 
-  async openTab(input: string, activate: boolean, client: McpClientInfo): Promise<TabData> {
+  async openTab(input: string, activate: boolean): Promise<TabData> {
     const tab = this.host.tabs.openInput(input, {
       background: !activate,
       // Record the network from the very first request: attach before the page loads.
@@ -236,7 +233,7 @@ export class AgentService {
       }
     })
     if (!tab) throw new ToolError(`Cannot open ${JSON.stringify(input)}`)
-    const driver = await this.driver(tab.id, client)
+    const driver = await this.driver(tab.id)
     await waitForLoad(driver.wc)
     return tab
   }
@@ -264,9 +261,7 @@ export class AgentService {
         return tab ? this.describeTab(tab) : id
       },
       suppressContextMenu: (wc: WebContents, ms: number) => this.noContextMenuUntil.set(wc, Date.now() + ms),
-      pendingDialog: () => this.pendingDialog(tabId),
-      // Verbs whose target is missing read fine without it ("Clicking").
-      cursorText: (verb: CursorVerb, target: string) => this.host.t(`agent.cursor.${verb}` as MessageKey, { target }).trim()
+      pendingDialog: () => this.pendingDialog(tabId)
     }
   }
 
