@@ -1,9 +1,11 @@
 import { memo, useEffect, useRef } from 'react'
-import type { FolderId, SpaceId } from '@shared/types'
+import { useShallow } from 'zustand/react/shallow'
+import type { ShellState } from '@shared/patch'
+import type { FolderId, SpaceId, TabId } from '@shared/types'
 import { Icon } from '../../components/Icon'
 import { useT } from '../../lib/i18n'
 import { send } from '../../lib/rpc'
-import { isWithinFolder, optimisticFolder, useBrowser } from '../../stores/browser'
+import { optimisticFolder, useBrowser } from '../../stores/browser'
 import { useUi } from '../../stores/ui'
 import { beginDrag, childDropIndexFor, dragJustEnded, dropBeforeChild, dropInto, isDragging, treeInset } from './drag'
 import { DropLine, TabItem } from './TabItem'
@@ -90,6 +92,35 @@ function RenameField({ id, name }: { id: FolderId; name: string }) {
   )
 }
 
+const NO_TABS: TabId[] = []
+
+/**
+ * Tabs a collapsed folder keeps showing, in tree order (as in Arc): the
+ * opened ones anywhere below it, and the active one. Closing a saved tab
+ * puts it back inside.
+ */
+function shownWhileCollapsed(s: ShellState, folderId: FolderId, activeTabId: TabId | null): TabId[] {
+  let out: TabId[] | null = null
+  const walk = (id: FolderId, depth: number) => {
+    const folder = s.folders[id]
+    if (!folder || depth > 64) return
+    for (const child of folder.childIds) {
+      if (child in s.folders) walk(child, depth + 1)
+      else if (child === activeTabId || s.tabs[child]?.opened) (out ??= []).push(child)
+    }
+  }
+  walk(folderId, 0)
+  return out ?? NO_TABS
+}
+
+/** A tab shown under its collapsed folder; drops on it land where it really sits. */
+function PeekTab({ id, depth }: { id: TabId; depth: number }) {
+  const parentId = useBrowser((s) => s.tabs[id]?.folderId ?? null)
+  const index = useBrowser((s) => (parentId ? (s.folders[parentId]?.childIds.indexOf(id) ?? 0) : 0))
+  if (!parentId) return null
+  return <TabItem id={id} index={index} tree={{ parentId, depth }} />
+}
+
 /** Quiet hint inside an open folder that holds nothing yet; also a drop target. */
 function EmptyHint({ id, depth }: { id: FolderId; depth: number }) {
   const t = useT()
@@ -114,14 +145,9 @@ const FolderNode = memo(function FolderNode({ id, spaceId, parentId, index, dept
   const before = useUi(dropBeforeChild(spaceId, parentId, index))
   const into = useUi(dropInto(id))
   const endIndex = useUi(childDropIndexFor(spaceId, id))
-  // A collapsed folder still shows the active tab when it lives inside it (as in Arc).
-  const peekId = useBrowser((s) => {
-    const active = s.spaces[spaceId]?.activeTabId
-    const tab = active ? s.tabs[active] : undefined
-    return s.folders[id]?.collapsed && tab?.folderId && isWithinFolder(s.folders, tab.folderId, id) ? tab.id : null
-  })
-  const peekParent = useBrowser((s) => (peekId ? (s.tabs[peekId]?.folderId ?? null) : null))
-  const peekIndex = useBrowser((s) => (peekId && peekParent ? (s.folders[peekParent]?.childIds.indexOf(peekId) ?? 0) : 0))
+  const peekIds = useBrowser(
+    useShallow((s) => (s.folders[id]?.collapsed ? shownWhileCollapsed(s, id, s.spaces[spaceId]?.activeTabId ?? null) : NO_TABS))
+  )
   if (!folder) return null
 
   const open = !folder.collapsed
@@ -200,7 +226,7 @@ const FolderNode = memo(function FolderNode({ id, spaceId, parentId, index, dept
           ))
         ))}
       {open && count > 0 && endIndex >= count && <EndLine inset={treeInset(depth + 1) - 2} />}
-      {peekId && peekParent && <TabItem id={peekId} index={peekIndex} tree={{ parentId: peekParent, depth: depth + 1 }} />}
+      {!open && peekIds.map((tabId) => <PeekTab key={tabId} id={tabId} depth={depth + 1} />)}
     </div>
   )
 })

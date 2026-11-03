@@ -9,7 +9,8 @@ const MAX_PRESSURE_DISCARDS = 3
 /**
  * Reclaims background tabs: those idle longer than the configured timeout,
  * and — when a memory budget is set — the least recently used ones until the
- * app fits again. Discarded tabs keep their history and reload on demand.
+ * app fits again. A tab playing media is never idle. Discarded tabs keep
+ * their history and reload on demand.
  */
 export class TabDiscarder {
   private timer: NodeJS.Timeout | null = null
@@ -32,16 +33,14 @@ export class TabDiscarder {
 
   tick(now = Date.now()): void {
     const { discardAfterMinutes, memoryBudgetMB } = this.settings.get()
-    const candidates = this.tabs.discardCandidates()
     if (discardAfterMinutes > 0) {
-      const cutoff = now - discardAfterMinutes * 60_000
-      for (const tab of candidates) {
-        if (tab.lastActiveAt < cutoff && this.tabs.discardTab(tab.id)) this.discarded += 1
+      for (const tab of this.tabs.discardCandidates(now - discardAfterMinutes * 60_000, now)) {
+        if (this.tabs.discardTab(tab.id)) this.discarded += 1
       }
     }
     if (memoryBudgetMB > 0 && totalMemoryMB() > memoryBudgetMB) {
       let n = 0
-      for (const tab of this.tabs.discardCandidates()) {
+      for (const tab of this.tabs.discardCandidates(Infinity, now)) {
         if (n >= MAX_PRESSURE_DISCARDS) break
         if (this.tabs.discardTab(tab.id)) {
           n += 1

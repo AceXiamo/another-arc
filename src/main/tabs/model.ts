@@ -6,10 +6,15 @@ import type { NavState } from '../persistence/records'
 // knows nothing about Electron so it can be unit tested; TabManager mirrors its
 // changes onto WebContentsViews, the shell and the database.
 
-export interface TabData extends TabState {
+export interface TabData extends Omit<TabState, 'opened'> {
   createdAt: number
   /** Back/forward stack captured when the tab was last unloaded or saved. */
   navState: NavState | null
+}
+
+/** See `TabState.opened`. */
+export function isOpened(tab: Pick<TabData, 'live' | 'navState'>): boolean {
+  return tab.live || tab.navState !== null
 }
 
 export interface SpaceData extends SpaceState {
@@ -165,7 +170,8 @@ export class BrowserModel {
 
   /**
    * Saved tabs of a space (top level and folders), top to bottom. `visibleOnly`
-   * skips collapsed folders, except for the active tab, which stays shown under them.
+   * skips collapsed folders, except for the tabs that stay shown under them:
+   * the opened ones and the active one.
    */
   savedTabIds(spaceId: SpaceId, visibleOnly = false): TabId[] {
     const space = this.spaces.get(spaceId)
@@ -175,7 +181,12 @@ export class BrowserModel {
         const folder = this.folders.get(id)
         if (!folder) out.push(id)
         else if (!visibleOnly || !folder.collapsed) walk(folder.childIds)
-        else if (space?.activeTabId && this.folderSubtree(id).tabs.includes(space.activeTabId)) out.push(space.activeTabId)
+        else {
+          for (const tabId of this.folderSubtree(id).tabs) {
+            const tab = this.tabs.get(tabId)
+            if (tab && (tabId === space?.activeTabId || isOpened(tab))) out.push(tabId)
+          }
+        }
       }
     }
     if (space) walk(space.savedIds)

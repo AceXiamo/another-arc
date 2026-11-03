@@ -295,6 +295,22 @@ describe('BrowserModel folders', () => {
     expect(m.visibleTabIds('s1')).toEqual(['b', 'c', 'a'])
   })
 
+  it('a collapsed folder keeps its opened tabs visible until they are closed', () => {
+    const { m } = withFolders()
+    m.moveTab('b', { spaceId: 's1', pinned: false, folderId: 'g', index: 0 })
+    m.moveTab('c', { spaceId: 's1', pinned: false, folderId: 'f2', index: 0 })
+    m.updateFolder('f1', { collapsed: true })
+    m.activateTab('a')
+    // Live, then discarded (unloaded with its history kept): still opened.
+    m.updateTab('b', { live: true })
+    expect(m.visibleTabIds('s1')).toEqual(['b', 'c', 'a'])
+    m.updateTab('b', { live: false, navState: { entries: [], index: 0 } })
+    expect(m.visibleTabIds('s1')).toEqual(['b', 'c', 'a'])
+    // Closed back to its saved page: hidden inside the folder again.
+    m.updateTab('b', { navState: null })
+    expect(m.visibleTabIds('s1')).toEqual(['c', 'a'])
+  })
+
   it('a closed folder tab hands over to the most recently used live tab', () => {
     const { m } = withFolders()
     m.moveTab('b', { spaceId: 's1', pinned: false, folderId: 'f1', index: 0 })

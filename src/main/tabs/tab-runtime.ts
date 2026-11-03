@@ -83,6 +83,10 @@ export class TabRuntime {
   private restoring = false
   private afterRestore: Array<() => void> = []
   private recoveredRestoreCrash = false
+  /** Media players playing in the page, heard or not (every start has a pause, end or teardown). */
+  private playingMedia = 0
+  /** When the page last stopped playing media or making sound. */
+  private stoppedPlayingAt = 0
   /** Set after the user confirmed leaving a page with a beforeunload handler. */
   allowUnloadOnce = false
 
@@ -102,6 +106,16 @@ export class TabRuntime {
 
   get isClosing(): boolean {
     return this.closing
+  }
+
+  /**
+   * When the page last played media or made sound; `now` while it still does.
+   * Chromium calls a page silent within a second of its sound stopping, so
+   * audibility alone misses music between tracks, quiet stretches of a
+   * stream and muted video.
+   */
+  lastPlayedAt(now = Date.now()): number {
+    return this.playingMedia > 0 || this.wc.isCurrentlyAudible() ? now : this.stoppedPlayingAt
   }
 
   /** Restore the saved back/forward stack, or load `url` fresh. */
@@ -241,6 +255,9 @@ export class TabRuntime {
     wc.on('page-favicon-updated', on((_e: unknown, favicons: string[]) => host.faviconsChanged(tabId, favicons)))
 
     wc.on('render-process-gone', (_e, details) => {
+      // Its players went with it, whether or not they said so.
+      if (this.playingMedia > 0) this.stoppedPlayingAt = Date.now()
+      this.playingMedia = 0
       if (details.reason === 'clean-exit') return
       if (this.restoring && !this.recoveredRestoreCrash) {
         // Known Chromium crash while restoring PageState: recover silently.
@@ -252,7 +269,18 @@ export class TabRuntime {
       update({ crashed: true, loading: false, audible: false })
     })
 
-    wc.on('audio-state-changed', (event) => update({ audible: event.audible }))
+    wc.on('audio-state-changed', (event) => {
+      if (!event.audible) this.stoppedPlayingAt = Date.now()
+      update({ audible: event.audible })
+    })
+    wc.on('media-started-playing', () => {
+      this.playingMedia += 1
+    })
+    wc.on('media-paused', () => {
+      if (this.playingMedia === 0) return
+      this.playingMedia -= 1
+      if (this.playingMedia === 0) this.stoppedPlayingAt = Date.now()
+    })
 
     wc.on('found-in-page', on((_e: unknown, result: FoundInPageResult) => host.foundInPage(tabId, result)))
     wc.on('context-menu', on((_e: unknown, params: ContextMenuParams) => host.contextMenu(tabId, params)))

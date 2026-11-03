@@ -174,9 +174,9 @@ test('drags tabs into folders, nests folders and keeps closed folder tabs', asyn
   await expect(todayTab(shell, b)).toBeVisible()
   await expect.poll(async () => (await state(app)).tabs[b]?.folderId).toBeNull()
 
-  // Collapsing hides the children; expanding brings them back.
+  // Collapsing hides the children but the opened tab; expanding brings them back.
   await folderRow(shell, outer).click()
-  await expect(treeTab(shell, a)).toHaveCount(0)
+  await expect(treeTab(shell, a)).toHaveCount(1)
   await expect(folderRow(shell, inner)).toHaveCount(0)
   await folderRow(shell, outer).click()
   await expect(treeTab(shell, a)).toBeVisible()
@@ -200,6 +200,12 @@ test('drags tabs into folders, nests folders and keeps closed folder tabs', asyn
   await treeTab(shell, a).click({ button: 'middle' })
   await expect.poll(async () => (await state(app)).tabs[a]?.live).toBe(false)
   await expect(treeTab(shell, a)).toBeVisible()
+
+  // Closed (and no longer active), it hides with the rest of a collapsed folder.
+  await expect.poll(async () => (await state(app)).spaces[0]?.activeTabId).not.toBe(a)
+  await folderRow(shell, outer).click()
+  await expect(treeTab(shell, a)).toHaveCount(0)
+  await folderRow(shell, outer).click()
 })
 
 test('saves tabs at the top level of the saved list and moves them around by drag', async () => {
@@ -287,7 +293,7 @@ test('right-click on blank sidebar space opens the sidebar menu, rows keep their
   await expect.poll(async () => Object.values((await state(app)).folders).map((f) => f.name)).toEqual(['Saved', 'Inbox'])
 })
 
-test('a collapsed folder keeps showing the active tab saved inside it', async () => {
+test('a collapsed folder keeps showing the opened tabs saved inside it', async () => {
   const { app, shell } = ctx
   const spaceId = (await state(app)).activeSpaceId
   const outer = await rpc<string>(shell, 'folders.create', { spaceId, name: 'Outer' })
@@ -303,9 +309,17 @@ test('a collapsed folder keeps showing the active tab saved inside it', async ()
   await expect(folderRow(shell, inner)).toHaveCount(0)
   expect(await inMain(app, (b, sid: string) => b.tabs.model.visibleTabIds(sid), spaceId)).toEqual([saved, other])
 
-  // Once another tab is active it hides with the rest of the folder.
+  // Still opened once another tab is active: it stays, as in Arc.
   await rpc(shell, 'tabs.activate', other)
+  await expect(treeTab(shell, saved)).toHaveCount(1)
+  expect(await inMain(app, (b, sid: string) => b.tabs.model.visibleTabIds(sid), spaceId)).toEqual([saved, other])
+
+  // Asleep (discarded) it is still opened; closing it back to its saved page hides it.
+  expect(await inMain(app, (b, id: string) => b.tabs.discardTab(id), saved)).toBe(true)
+  await expect(treeTab(shell, saved)).toHaveCount(1)
+  await rpc(shell, 'tabs.close', saved)
   await expect(treeTab(shell, saved)).toHaveCount(0)
+  expect(await inMain(app, (b, sid: string) => b.tabs.model.visibleTabIds(sid), spaceId)).toEqual([other])
 })
 
 test('renders the folder tree', async () => {

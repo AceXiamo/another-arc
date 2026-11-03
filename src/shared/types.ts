@@ -34,6 +34,14 @@ export interface TabState {
   savedTitle: string
   /** A WebContents currently exists for this tab (false = unloaded / discarded). */
   live: boolean
+  /**
+   * The tab has a page to come back to: it is live, or unloaded with its
+   * back/forward stack kept (discarded, restored after a restart). A saved
+   * tab is opened from its first visit until it is closed back to its saved
+   * page; a collapsed folder keeps showing its opened tabs, as in Arc.
+   * Derived in main, never stored.
+   */
+  opened: boolean
   loading: boolean
   audible: boolean
   muted: boolean

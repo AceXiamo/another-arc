@@ -15,6 +15,7 @@ function tab(id: string, title = id): TabState {
     savedUrl: '',
     savedTitle: '',
     live: false,
+    opened: false,
     loading: false,
     audible: false,
     muted: false,

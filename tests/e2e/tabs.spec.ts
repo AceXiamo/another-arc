@@ -148,6 +148,47 @@ test('background tabs can be discarded and restored with history', async () => {
   await waitForShown(app, '/page/one')
 })
 
+test('a background tab playing media is not idle, even when silent', async () => {
+  const { app, shell } = ctx
+  const music = await rpc<string>(shell, 'tabs.create', { url: page('music') })
+  await waitForShown(app, '/page/music')
+  // Muted (so it may autoplay and Chromium never calls it audible) and
+  // detached from the document, like most web music players.
+  await inMain(
+    app,
+    (b, tabId: string) =>
+      b.tabs.runtime(tabId).wc.executeJavaScript(`(async () => {
+        const rate = 8000, n = rate, buf = new ArrayBuffer(44 + n * 2), v = new DataView(buf)
+        const w = (o, s) => [...s].forEach((c, i) => v.setUint8(o + i, c.charCodeAt(0)))
+        w(0, 'RIFF'); v.setUint32(4, 36 + n * 2, true); w(8, 'WAVEfmt '); v.setUint32(16, 16, true); v.setUint16(20, 1, true)
+        v.setUint16(22, 1, true); v.setUint32(24, rate, true); v.setUint32(28, rate * 2, true); v.setUint16(32, 2, true)
+        v.setUint16(34, 16, true); w(36, 'data'); v.setUint32(40, n * 2, true)
+        window.track = new Audio(URL.createObjectURL(new Blob([buf], { type: 'audio/wav' })))
+        track.muted = true
+        track.loop = true
+        await track.play()
+      })()`),
+    music
+  )
+  await rpc(shell, 'tabs.create', { url: page('other') })
+  await waitForShown(app, '/page/other')
+  // Shown long ago, past any idle timeout.
+  await inMain(app, (b, tabId: string) => b.tabs.model.updateTab(tabId, { lastActiveAt: 0 }), music)
+  const tick = (aheadMinutes: number) =>
+    inMain(app, (b, ahead: number) => b.discarder.tick(Date.now() + ahead * 60_000), aheadMinutes)
+
+  await tick(0)
+  expect((await state(app)).tabs[music]!.live).toBe(true)
+
+  // Paused, it is idle from then on: discarded once the timeout passes.
+  await inMain(app, (b, tabId: string) => b.tabs.runtime(tabId).wc.executeJavaScript('track.pause()'), music)
+  await tick(5)
+  expect((await state(app)).tabs[music]!.live).toBe(true)
+  const discardAfterMinutes = await inMain(app, (b) => b.settings.get().discardAfterMinutes)
+  await tick(discardAfterMinutes + 1)
+  await expect.poll(async () => (await state(app)).tabs[music]!.live).toBe(false)
+})
+
 test('deleting a space closes its tabs', async () => {
   const { app, shell } = ctx
   const work = await rpc<string>(shell, 'spaces.create', { name: 'Tmp', icon: 'lab', color: '#ef4444' })

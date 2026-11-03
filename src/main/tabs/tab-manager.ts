@@ -25,7 +25,7 @@ import type { ProfileManager } from '../profiles/profile-manager'
 import type { SettingsService } from '../settings/settings-service'
 import type { BrowserWindowController } from '../windows/browser-window'
 import type { ShellSync } from '../windows/shell-sync'
-import { BrowserModel, type FolderData, type ModelListener, type SpaceData, type TabData } from './model'
+import { BrowserModel, isOpened, type FolderData, type ModelListener, type SpaceData, type TabData } from './model'
 import { TabRuntime, type TabRuntimeHost } from './tab-runtime'
 import { nextZoomFactor, type ZoomStore } from './zoom'
 
@@ -86,15 +86,22 @@ const PERSISTED_TAB_FIELDS = new Set<keyof TabData>([
 
 const PRESENTATION_FIELDS = new Set<keyof TabData>(['url', 'error', 'crashed', 'live'])
 
+/**
+ * Sound or media that stopped this recently still counts as playing: the gap
+ * before the next track, a stream reconnecting, Web Audio between sounds.
+ */
+const PLAYING_GRACE_MS = 2 * 60_000
+
 export function toTabState(t: TabData): TabState {
   const { createdAt: _c, navState: _n, ...state } = t
-  return state
+  return { ...state, opened: isOpened(t) }
 }
 
-function stateOnly(patch: Partial<TabData>): Partial<TabState> {
-  if (!('navState' in patch) && !('createdAt' in patch)) return patch
+/** What the shell needs of a model change to `tab` (already applied). */
+function stateOnly(tab: TabData | undefined, patch: Partial<TabData>): Partial<TabState> {
+  if (!('navState' in patch) && !('createdAt' in patch) && !('live' in patch)) return patch
   const { createdAt: _c, navState: _n, ...rest } = patch
-  return rest
+  return tab ? { ...rest, opened: isOpened(tab) } : rest
 }
 
 function newTabData(init: { id?: TabId; spaceId: SpaceId; url: string; pinned?: boolean } & Partial<TabData>): TabData {
@@ -893,16 +900,24 @@ export class TabManager implements TabRuntimeHost {
     return true
   }
 
-  /** Background tabs ordered from least to most recently used. */
-  discardCandidates(): TabData[] {
-    const out: TabData[] = []
-    for (const id of this.runtimes.keys()) {
+  /**
+   * Background tabs last used before `usedBefore`, least recently used first.
+   * Playing media or sound in the background is use: music, a video or a
+   * stream keeps its tab, and its idle time starts when it stops.
+   */
+  discardCandidates(usedBefore = Infinity, now = Date.now()): TabData[] {
+    const out: Array<{ tab: TabData; usedAt: number }> = []
+    for (const [id, rt] of this.runtimes) {
       if (id === this.shownTabId) continue
       const tab = this.model.getTab(id)
       // An agent may be in the middle of working in it.
-      if (tab && !tab.audible && !tab.agent) out.push(tab)
+      if (!tab || tab.audible || tab.agent) continue
+      const playedAt = rt.lastPlayedAt(now)
+      if (now - playedAt < PLAYING_GRACE_MS) continue
+      const usedAt = Math.max(tab.lastActiveAt, playedAt)
+      if (usedAt < usedBefore) out.push({ tab, usedAt })
     }
-    return out.sort((a, b) => a.lastActiveAt - b.lastActiveAt)
+    return out.sort((a, b) => a.usedAt - b.usedAt).map((c) => c.tab)
   }
 
   /** Stop reacting to WebContents teardown (app is quitting). */
@@ -1197,7 +1212,7 @@ export class TabManager implements TabRuntimeHost {
         persister.markTab(tab.id)
       },
       tabUpdated: (id, patch) => {
-        shell.tab(id, stateOnly(patch))
+        shell.tab(id, stateOnly(this.model.getTab(id), patch))
         let persist = false
         let presentation = false
         for (const key in patch) {

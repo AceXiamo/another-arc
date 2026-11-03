@@ -63,9 +63,9 @@ export const TabItem = memo(function TabItem({ id, index, tree }: { id: string; 
   const title = tab.title || tab.savedTitle || fallbackTitle(tab.url || tab.savedUrl, locale)
   // Unloaded (discarded / restored / closed saved) tabs read quieter until they are woken.
   const asleep = !tab.live && !active
-  // A saved tab only offers "close" while it has something to unload.
+  // A saved tab only offers "close" while it is opened (live, or asleep with its page kept).
   const saved = isSavedTab(tab)
-  const closable = !saved || tab.live
+  const closable = !saved || tab.opened
   const inset = tree ? treeInset(tree.depth) : 10
   return (
     <div

@@ -88,7 +88,9 @@ test('folders, nesting, collapse state and folder tabs survive a restart', async
     expect(s.spaces[0]!.savedIds).toEqual([work, misc])
     expect(s.folders[work]!.childIds).toEqual([a, docs])
     expect(s.folders[misc]!.name).toBe(t('folder.defaultName'))
-    // Cycling skips the tab hidden in the collapsed folder.
+    // Cycling skips the tabs hidden in the collapsed folder, but not its opened ones.
+    expect(await inMain(run.app, (b, sid: string) => b.tabs.model.visibleTabIds(sid), spaceId)).toEqual([a, bTab, c])
+    await rpc(run.shell, 'tabs.close', bTab)
     expect(await inMain(run.app, (b, sid: string) => b.tabs.model.visibleTabIds(sid), spaceId)).toEqual([a, c])
 
     // A folder cannot move into its own subtree.
