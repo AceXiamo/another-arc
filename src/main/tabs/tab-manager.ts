@@ -1,11 +1,14 @@
 import { randomUUID } from 'node:crypto'
 import {
+  BaseWindow,
   clipboard,
+  nativeTheme,
   type BrowserWindowConstructorOptions,
   type ContextMenuParams,
   type Event as ElectronEvent,
   type HandlerDetails,
   type Input,
+  type Rectangle,
   type Result as FoundInPageResult,
   type WebContents,
   type WindowOpenHandlerResponse
@@ -13,8 +16,10 @@ import {
 import { DEFAULT_PROFILE_ID, DEFAULT_SPACE, LIMITS } from '@shared/defaults'
 import type { CreateFolderOptions, MoveFolderOptions, MoveTabOptions, SpaceInput } from '@shared/ipc'
 import { type Locale, LOCALES, translate } from '@shared/i18n'
+import type { DevToolsDock } from '@shared/layout'
 import type { FolderId, FolderState, SpaceId, TabId, TabState } from '@shared/types'
 import { isSavedTab } from '@shared/tabs'
+import { sameViewport, type ViewportSpec } from '@shared/viewport'
 import { sanitizeSpaceTheme, themesEqual } from '@shared/theme'
 import { isInternalUrl, originOf, resolveInput, searchTemplate, tabPresentsView } from '@shared/url'
 import type { FaviconCache } from '../history/favicon-cache'
@@ -84,7 +89,11 @@ const PERSISTED_TAB_FIELDS = new Set<keyof TabData>([
   'savedTitle'
 ])
 
-const PRESENTATION_FIELDS = new Set<keyof TabData>(['url', 'error', 'crashed', 'live'])
+const PRESENTATION_FIELDS = new Set<keyof TabData>(['url', 'error', 'crashed', 'live', 'devtools', 'viewport'])
+
+/** Undocked DevTools open at this size the first time. */
+const DEVTOOLS_WINDOW_SIZE = { width: 960, height: 720 }
+export const DEVTOOLS_WINDOW_BOUNDS_KEY = 'devtools.windowBounds'
 
 /**
  * Sound or media that stopped this recently still counts as playing: the gap
@@ -162,6 +171,11 @@ function popupOptions(features: string): BrowserWindowConstructorOptions {
 
 const FAVICON_PREFETCH_CONCURRENCY = 4
 
+/** Chrome's title for undocked DevTools: "DevTools - example.com/path". */
+function devtoolsTitle(url: string): string {
+  return `DevTools - ${url.replace(/^https?:\/\//, '')}`
+}
+
 const OPENABLE_SCHEMES = /^(https?:|about:blank|blob:|chrome-extension:|file:)/
 
 export class TabManager implements TabRuntimeHost {
@@ -181,6 +195,10 @@ export class TabManager implements TabRuntimeHost {
   private presentQueued = false
   private shownTabId: TabId | null = null
   private frozen = false
+  /** Where DevTools open (the View menu, the splitter's menu, ⌘⇧D). */
+  private devtoolsDock: DevToolsDock = 'right'
+  /** Last place of an undocked DevTools window. */
+  devtoolsWindowBounds: Rectangle | null = null
 
   constructor(private readonly deps: TabManagerDeps) {
     this.model = new BrowserModel(this.modelListener())
@@ -700,11 +718,138 @@ export class TabManager implements TabRuntimeHost {
     this.deps.zoom.set(rt.wc.getURL(), factor)
   }
 
+  // -- DevTools ------------------------------------------------------------------
+
+  /**
+   * Open the page's DevTools where the dock setting says (beside the page,
+   * or in a window of their own), optionally inspecting the element at a
+   * point of the view (what context menus report; CSS pixels × zoom × emulation scale).
+   */
+  openDevTools(tabId: TabId, opts: { inspect?: { x: number; y: number }; focus?: boolean } = {}): boolean {
+    const { inspect, focus = true } = opts
+    const rt = this.runtimes.get(tabId) ?? this.wake(tabId)
+    if (!rt || rt.wc.isDestroyed()) return false
+    const fresh = !rt.devtools
+    const view = rt.attachDevTools(nativeTheme.shouldUseDarkColors ? '#282828' : '#ffffff')
+    this.model.updateTab(tabId, { devtools: true })
+    this.placeDevTools(rt)
+    if (inspect) rt.wc.inspectElement(Math.round(inspect.x), Math.round(inspect.y))
+    // Like ⌘⌥I in Chrome: the keyboard goes to DevTools.
+    if (focus && (fresh || inspect)) setImmediate(() => !view.webContents.isDestroyed() && view.webContents.focus())
+    return true
+  }
+
+  closeDevTools(tabId: TabId): void {
+    const rt = this.runtimes.get(tabId)
+    const had = rt?.devtools != null
+    rt?.detachDevTools()
+    if (this.model.getTab(tabId)?.devtools) this.model.updateTab(tabId, { devtools: false })
+    if (had && tabId === this.shownTabId && this.window && !this.window.isOverlayOpen) this.window.focusPage()
+  }
+
   toggleDevTools(tabId: TabId): void {
-    const wc = this.runtimes.get(tabId)?.wc
-    if (!wc) return
-    if (wc.isDevToolsOpened()) wc.closeDevTools()
-    else wc.openDevTools({ mode: 'detach' })
+    if (this.runtimes.get(tabId)?.devtools) this.closeDevTools(tabId)
+    else this.openDevTools(tabId)
+  }
+
+  devtoolsOpen(tabId: TabId): boolean {
+    return this.runtimes.get(tabId)?.devtools != null
+  }
+
+  getDevToolsDock(): DevToolsDock {
+    return this.devtoolsDock
+  }
+
+  /** Move every open DevTools to the new dock (their state stays: it is the same view). */
+  setDevToolsDock(dock: DevToolsDock): void {
+    if (dock === this.devtoolsDock) return
+    this.devtoolsDock = dock
+    for (const rt of this.runtimes.values()) if (rt.devtools) this.placeDevTools(rt)
+    this.present()
+  }
+
+  /** Put a runtime's DevTools view where the dock says: its own window, or the main one (via present). */
+  private placeDevTools(rt: TabRuntime): void {
+    const view = rt.devtools
+    if (!view) return
+    if (this.devtoolsDock !== 'undocked') {
+      const window = rt.devtoolsWindow
+      if (!window) return
+      rt.devtoolsWindow = null
+      if (!window.isDestroyed()) {
+        window.contentView.removeChildView(view)
+        window.destroy()
+      }
+      this.schedulePresent()
+      return
+    }
+    if (rt.devtoolsWindow) {
+      if (!rt.devtoolsWindow.isDestroyed()) rt.devtoolsWindow.focus()
+      return
+    }
+    // Out of the main window first: a view has one parent.
+    rt.devtoolsWindow = this.createDevToolsWindow(rt)
+    this.present()
+    const window = rt.devtoolsWindow
+    const fit = () => {
+      if (window.isDestroyed()) return
+      const { width, height } = window.getContentBounds()
+      view.setBounds({ x: 0, y: 0, width, height })
+    }
+    view.setBorderRadius(0)
+    window.contentView.addChildView(view)
+    fit()
+    window.on('resize', fit)
+    window.show()
+  }
+
+  private createDevToolsWindow(rt: TabRuntime): BaseWindow {
+    const saved = this.devtoolsWindowBounds
+    const window = new BaseWindow({
+      width: saved?.width ?? DEVTOOLS_WINDOW_SIZE.width,
+      height: saved?.height ?? DEVTOOLS_WINDOW_SIZE.height,
+      ...(saved ? { x: saved.x, y: saved.y } : {}),
+      minWidth: 360,
+      minHeight: 240,
+      show: false,
+      title: devtoolsTitle(rt.wc.getURL()),
+      backgroundColor: nativeTheme.shouldUseDarkColors ? '#282828' : '#ffffff'
+    })
+    const save = () => {
+      if (window.isDestroyed() || window.isMinimized() || window.isFullScreen()) return
+      this.devtoolsWindowBounds = window.getNormalBounds()
+      this.deps.persister.setSetting(DEVTOOLS_WINDOW_BOUNDS_KEY, this.devtoolsWindowBounds)
+    }
+    window.on('resized', save)
+    window.on('moved', save)
+    // Closed by the user (we destroy it ourselves, which emits no 'close'): it
+    // closes by itself, DevTools go with it.
+    window.on('close', () => {
+      save()
+      if (rt.devtoolsWindow !== window) return
+      rt.devtoolsWindow = null
+      if (rt.devtools) window.contentView.removeChildView(rt.devtools)
+      this.closeDevTools(rt.tabId)
+    })
+    return window
+  }
+
+  // -- device emulation --------------------------------------------------------
+
+  /**
+   * Emulate a device's viewport in a tab (null turns it off). On screen the
+   * page is fit below the shell's device toolbar; off screen its view takes
+   * the emulated size, so agents can work in background tabs too.
+   */
+  setViewport(tabId: TabId, spec: ViewportSpec | null): boolean {
+    const tab = this.model.getTab(tabId)
+    if (!tab || (spec && isInternalUrl(tab.url))) return false
+    if (sameViewport(tab.viewport, spec)) return true
+    const rt = this.runtimes.get(tabId) ?? (spec ? this.wake(tabId) : undefined)
+    rt?.setViewport(spec, tabId === this.shownTabId ? undefined : 1)
+    if (rt && spec && tabId !== this.shownTabId) rt.view.setBounds({ x: 0, y: 0, width: spec.width, height: spec.height })
+    this.model.updateTab(tabId, { viewport: spec })
+    return true
   }
 
   // -- find in page ------------------------------------------------------------
@@ -891,7 +1036,7 @@ export class TabManager implements TabRuntimeHost {
     const tab = this.model.getTab(tabId)
     const rt = this.runtimes.get(tabId)
     if (!tab || !rt || tabId === this.shownTabId) return false
-    if (tab.audible || rt.wc.isDevToolsOpened() || rt.wc.isCurrentlyAudible()) return false
+    if (tab.audible || rt.devtools || rt.wc.isCurrentlyAudible()) return false
     const navState = rt.snapshot()
     this.runtimes.delete(tabId)
     this.discarding.set(tabId, rt)
@@ -971,7 +1116,17 @@ export class TabManager implements TabRuntimeHost {
         rt.load(tab)
       }
     }
-    window.showPage(tab && rt && tabPresentsView(tab) ? rt.view : null)
+    if (tab && rt && tabPresentsView(tab)) {
+      const shown = rt
+      window.showPage({
+        view: rt.view,
+        devtools: rt.devtools && !rt.devtoolsWindow ? rt.devtools : null,
+        viewport: tab.viewport ?? null,
+        scaled: (scale) => shown.setViewportScale(scale)
+      })
+    } else {
+      window.showPage(null)
+    }
 
     const nextId = tab?.id ?? null
     if (nextId !== this.shownTabId) {
@@ -1000,6 +1155,7 @@ export class TabManager implements TabRuntimeHost {
     if (this.model.getTab(tab.id)) this.model.updateTab(tab.id, { live: true, crashed: false })
     tab.live = true
     if (tab.muted) rt.wc.setAudioMuted(true)
+    if (tab.viewport) rt.setViewport(tab.viewport, 1)
     this.delegate?.runtimeCreated(tab, rt.wc)
     return rt
   }
@@ -1029,6 +1185,8 @@ export class TabManager implements TabRuntimeHost {
   navigated(tabId: TabId, url: string, typed: boolean, sameDocument: boolean): void {
     const tab = this.model.getTab(tabId)
     if (!tab) return
+    const devtoolsWindow = this.runtimes.get(tabId)?.devtoolsWindow
+    if (devtoolsWindow && !devtoolsWindow.isDestroyed()) devtoolsWindow.setTitle(devtoolsTitle(url))
     if (!sameDocument) {
       const rt = this.runtimes.get(tabId)
       const stored = this.deps.zoom.get(url)
@@ -1131,6 +1289,28 @@ export class TabManager implements TabRuntimeHost {
     this.delegate?.popupCreated(window)
   }
 
+  devtoolsInput(tabId: TabId, event: ElectronEvent, input: Input): void {
+    const rt = this.runtimes.get(tabId)
+    if (input.type === 'keyDown' && input.meta && !input.control) {
+      // ⌘⌥I / ⌘⌥J close these DevTools (not the active tab's), as in Chrome;
+      // in their own window ⌘W closes them too.
+      const own = input.alt && !input.shift && (input.code === 'KeyI' || input.code === 'KeyJ')
+      const closeWindow = rt?.devtoolsWindow && !input.alt && !input.shift && input.code === 'KeyW'
+      if (own || closeWindow) {
+        event.preventDefault()
+        this.closeDevTools(tabId)
+        return
+      }
+    }
+    this.delegate?.beforeInput(tabId, event, input)
+  }
+
+  devtoolsOpenUrl(tabId: TabId, url: string): void {
+    const opener = this.model.getTab(tabId)
+    if (!opener || !OPENABLE_SCHEMES.test(url)) return
+    this.createTab({ url, spaceId: opener.spaceId, index: opener.pinned || isSavedTab(opener) ? 0 : this.model.sortOrderOf(opener) + 1 })
+  }
+
   preventedUnload(tabId: TabId): void {
     const closing = this.closing.get(tabId)
     const discarding = this.discarding.get(tabId)
@@ -1181,6 +1361,8 @@ export class TabManager implements TabRuntimeHost {
       this.byWebContents.delete(rt.wc.id)
       this.delegate?.runtimeDestroyed(rt.wc)
     }
+    // DevTools went with the page (unless the tab already has a new one).
+    if (!this.runtimes.get(tabId)?.devtools && this.model.getTab(tabId)?.devtools) this.model.updateTab(tabId, { devtools: false })
     if (closing) {
       this.closing.delete(tabId)
       return

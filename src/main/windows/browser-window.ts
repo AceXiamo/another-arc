@@ -1,12 +1,27 @@
 import { BaseWindow, screen, systemPreferences, WebContentsView, type Rectangle, type WebContents } from 'electron'
-import { LAYOUT, pageBounds, pageRadius, type LayoutInput, type Rect } from '@shared/layout'
+import { LAYOUT, pageBounds, pageRadius, splitCard, viewportFrame, type DockSide, type LayoutInput, type Rect, type Size } from '@shared/layout'
 
-export interface WindowLayout extends LayoutInput {}
+export interface WindowLayout extends LayoutInput {
+  /** Side docked DevTools take, and their width (left / right) or height (bottom). */
+  devtoolsSide: DockSide
+  devtoolsWidth: number
+  devtoolsHeight: number
+}
+
+/** What the page card shows: a page, with its docked DevTools and emulated viewport if any. */
+export interface PagePresentation {
+  view: WebContentsView
+  devtools: WebContentsView | null
+  /** Device emulation: the page is fit into the area below the device toolbar at this CSS size. */
+  viewport: Size | null
+  /** Told the scale the emulated viewport is drawn at, whenever the fit changes it. */
+  scaled?(scale: number): void
+}
 
 export interface FloatingSurface {
   view: WebContentsView
-  /** Bounds relative to the page card. */
-  place(card: Rect): Rectangle
+  /** Bounds in the window, given the page view's. */
+  place(page: Rect): Rectangle
   visible: boolean
   /** Stays above the shell even while the shell is raised over the page. */
   topmost?: boolean
@@ -35,7 +50,9 @@ export class BrowserWindowController {
   private dragTimer: NodeJS.Timeout | null = null
   readonly win: BaseWindow
   readonly shell: WebContentsView
-  private page: WebContentsView | null = null
+  private page: PagePresentation | null = null
+  /** Where the page view is now (the card, less docked DevTools and the device frame). */
+  private pageRect: Rect = { x: 0, y: 0, width: 0, height: 0 }
   private readonly surfaces = new Map<string, FloatingSurface>()
   private overlay = false
   private layout: WindowLayout
@@ -99,7 +116,12 @@ export class BrowserWindowController {
   }
 
   get currentPage(): WebContentsView | null {
-    return this.page
+    return this.page?.view ?? null
+  }
+
+  /** The page view's bounds in the window. */
+  pageBounds(): Rect {
+    return this.pageRect
   }
 
   setRelayoutListener(fn: () => void): void {
@@ -126,32 +148,59 @@ export class BrowserWindowController {
     const { width, height } = this.win.getContentBounds()
     this.shell.setBounds({ x: 0, y: 0, width, height })
     const card = pageBounds({ width, height }, this.layout)
-    if (this.page) {
-      this.page.setBounds(card)
-      this.page.setBorderRadius(pageRadius(this.layout))
-    }
+    if (this.page) this.placePage(this.page, card)
+    else this.pageRect = card
     for (const surface of this.surfaces.values()) {
-      if (surface.visible) surface.view.setBounds(surface.place(card))
+      if (surface.visible) surface.view.setBounds(surface.place(this.pageRect))
     }
     this.onRelayout?.()
   }
 
+  /** Lay out the page card: page, docked DevTools beside it, an emulated viewport inside it. */
+  private placePage(p: PagePresentation, card: Rect): void {
+    const { htmlFullscreen: fullscreen, devtoolsSide: side, devtoolsWidth, devtoolsHeight } = this.layout
+    const split = splitCard(card, p.devtools && !fullscreen ? { side, size: side === 'bottom' ? devtoolsHeight : devtoolsWidth } : null)
+    let rect = split.page
+    let radius = pageRadius(this.layout)
+    if (p.viewport && !fullscreen) {
+      const frame = viewportFrame(split.page, p.viewport)
+      rect = { x: split.page.x + frame.x, y: split.page.y + frame.y, width: frame.width, height: frame.height }
+      radius = 0
+      p.scaled?.(frame.scale)
+    }
+    this.pageRect = rect
+    p.view.setBounds(rect)
+    p.view.setBorderRadius(radius)
+    if (p.devtools) {
+      // Hidden while the page is fullscreen: it keeps the view, out of sight.
+      p.devtools.setBounds(split.devtools ?? { x: 0, y: 0, width: 0, height: 0 })
+      p.devtools.setBorderRadius(LAYOUT.radius)
+    }
+  }
+
   /**
-   * Swap the visible page. The new view is attached before the old one is
+   * Swap what the card shows. New views are attached before old ones are
    * removed so there is never a frame with no page at all.
    */
-  showPage(view: WebContentsView | null): void {
-    if (view === this.page || this.destroyed) return
+  showPage(next: PagePresentation | null): void {
+    if (this.destroyed) return
     const previous = this.page
-    this.page = view
+    this.page = next
     const children = this.win.contentView
-    if (view) {
-      view.setBounds(this.cardBounds())
-      view.setBorderRadius(pageRadius(this.layout))
-      children.addChildView(view)
-      this.raiseFloating()
+    if (next) {
+      this.placePage(next, this.cardBounds())
+      const added = next.view !== previous?.view || next.devtools !== previous?.devtools
+      if (next.view !== previous?.view) children.addChildView(next.view)
+      if (next.devtools && next.devtools !== previous?.devtools) children.addChildView(next.devtools)
+      if (added) this.raiseFloating()
+    } else {
+      this.pageRect = this.cardBounds()
     }
-    if (previous) children.removeChildView(previous)
+    if (previous && previous.view !== next?.view) children.removeChildView(previous.view)
+    if (previous?.devtools && previous.devtools !== next?.devtools) children.removeChildView(previous.devtools)
+    for (const surface of this.surfaces.values()) {
+      if (surface.visible) surface.view.setBounds(surface.place(this.pageRect))
+    }
   }
 
   /** Raise the shell over the page (modal overlays) or put it back below. */
@@ -163,7 +212,8 @@ export class BrowserWindowController {
       this.raiseTopmost()
       this.shell.webContents.focus()
     } else {
-      if (this.page) this.win.contentView.addChildView(this.page)
+      if (this.page) this.win.contentView.addChildView(this.page.view)
+      if (this.page?.devtools) this.win.contentView.addChildView(this.page.devtools)
       this.raiseFloating()
     }
   }
@@ -184,7 +234,7 @@ export class BrowserWindowController {
   /** Move a surface that is already showing, e.g. to another form field. */
   repositionSurface(id: string): void {
     const surface = this.surfaces.get(id)
-    if (surface?.visible && !this.destroyed) surface.view.setBounds(surface.place(this.cardBounds()))
+    if (surface?.visible && !this.destroyed) surface.view.setBounds(surface.place(this.pageRect))
   }
 
   getSurface(id: string): FloatingSurface | undefined {
@@ -192,7 +242,7 @@ export class BrowserWindowController {
   }
 
   private attachSurface(surface: FloatingSurface): void {
-    surface.view.setBounds(surface.place(this.cardBounds()))
+    surface.view.setBounds(surface.place(this.pageRect))
     this.win.contentView.addChildView(surface.view)
     if (this.overlay && !surface.topmost) this.win.contentView.addChildView(this.shell)
     this.raiseTopmost()
@@ -258,7 +308,7 @@ export class BrowserWindowController {
 
   focusPage(): void {
     if (this.destroyed) return
-    if (this.page && !this.overlay) this.page.webContents.focus()
+    if (this.page && !this.overlay) this.page.view.webContents.focus()
     else this.shell.webContents.focus()
   }
 }

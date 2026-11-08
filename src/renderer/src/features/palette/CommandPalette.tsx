@@ -80,6 +80,26 @@ const COMMANDS: Command[] = [
     }
   },
   {
+    id: 'toggle-devtools',
+    words: keywords('palette.keywords.toggleDevTools'),
+    title: (t) => t('palette.command.toggleDevTools'),
+    icon: 'code',
+    run: () => {
+      const tab = selectActiveTab(useBrowser.getState())
+      if (tab) send('devtools.toggle', tab.id)
+    }
+  },
+  {
+    id: 'toggle-device-toolbar',
+    words: keywords('palette.keywords.toggleDeviceToolbar'),
+    title: (t) => t('palette.command.toggleDeviceToolbar'),
+    icon: 'device',
+    run: () => {
+      const tab = selectActiveTab(useBrowser.getState())
+      if (tab) send('viewport.toggle', tab.id)
+    }
+  },
+  {
     id: 'load-unpacked-extension',
     words: keywords('palette.keywords.loadUnpackedExtension'),
     title: (t) => t('palette.command.loadUnpackedExtension'),

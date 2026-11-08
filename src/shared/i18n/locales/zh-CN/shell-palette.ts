@@ -8,11 +8,15 @@ const zh: Record<keyof typeof en, string> = {
   'palette.command.newSpace': '新建空间',
   'palette.command.reopenClosedTab': '重新打开关闭的标签页',
   'palette.command.toggleSidebar': '切换侧边栏',
+  'palette.command.toggleDevTools': '打开或关闭开发者工具',
+  'palette.command.toggleDeviceToolbar': '打开或关闭设备模拟',
   'palette.command.loadUnpackedExtension': '加载已解压的扩展…',
 
   'palette.keywords.newSpace': '新建空间',
   'palette.keywords.reopenClosedTab': '重新打开, 恢复',
   'palette.keywords.toggleSidebar': '侧边栏',
+  'palette.keywords.toggleDevTools': '开发者工具, 调试, 检查, 控制台',
+  'palette.keywords.toggleDeviceToolbar': '设备, 手机, 移动端, 分辨率, 屏幕尺寸, 响应式',
   'palette.keywords.loadUnpackedExtension': '安装扩展',
 
   'palette.hint.switchToTab': '切换到标签页',

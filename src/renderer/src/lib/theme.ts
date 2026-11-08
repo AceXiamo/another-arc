@@ -38,8 +38,10 @@ export function startTheme(): void {
     setAttr('theme', (appearance === 'system' ? globalDark : appearance === 'dark') ? 'dark' : 'light')
     if (root.lang !== s.settings.language) root.lang = s.settings.language
     if (look) applyLook(look, setVar, setAttr)
-    // Not cached: the resizer writes it directly while dragging.
+    // Not cached: the resizers write them directly while dragging.
     root.style.setProperty('--sidebar-width', `${s.window.sidebarWidth}px`)
+    root.style.setProperty('--devtools-width', `${s.window.devtoolsWidth}px`)
+    root.style.setProperty('--devtools-height', `${s.window.devtoolsHeight}px`)
   }
   applyTheme = apply
   apply()
@@ -48,6 +50,8 @@ export function startTheme(): void {
     if (
       s.window.activeSpaceId !== prev.window.activeSpaceId ||
       s.window.sidebarWidth !== prev.window.sidebarWidth ||
+      s.window.devtoolsWidth !== prev.window.devtoolsWidth ||
+      s.window.devtoolsHeight !== prev.window.devtoolsHeight ||
       s.settings.theme !== prev.settings.theme ||
       s.settings.language !== prev.settings.language ||
       s.spaces[s.window.activeSpaceId] !== prev.spaces[prev.window.activeSpaceId]
@@ -151,6 +155,11 @@ function drawGrainTile(): void {
 /** Live sidebar width while dragging the resizer (main is told separately). */
 export function setSidebarWidthVar(width: number): void {
   document.documentElement.style.setProperty('--sidebar-width', `${width}px`)
+}
+
+/** Live size of docked DevTools while dragging the splitter (main is told separately). */
+export function setDevtoolsSizeVar(axis: 'width' | 'height', size: number): void {
+  document.documentElement.style.setProperty(`--devtools-${axis}`, `${size}px`)
 }
 
 /** Copy theme state onto another document (floating surfaces). */

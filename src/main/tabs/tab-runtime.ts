@@ -1,5 +1,6 @@
 import {
   WebContentsView,
+  type BaseWindow,
   type ContextMenuParams,
   type Event as ElectronEvent,
   type HandlerDetails,
@@ -10,9 +11,11 @@ import {
   type WindowOpenHandlerResponse
 } from 'electron'
 import { LIMITS } from '@shared/defaults'
-import { outPath } from '../app/environment'
 import type { TabError, TabId } from '@shared/types'
+import { viewportUserAgent, type ViewportSpec } from '@shared/viewport'
+import { outPath } from '../app/environment'
 import type { NavState } from '../persistence/records'
+import { holdDebugger, releaseDebugger } from './debugger'
 import type { TabData } from './model'
 
 /** Callbacks a runtime uses to report back to the TabManager. */
@@ -30,7 +33,15 @@ export interface TabRuntimeHost {
   destroyed(tabId: TabId): void
   zoomWheel(tabId: TabId, direction: 'in' | 'out'): void
   popupCreated(window: Electron.BrowserWindow): void
+  /** A key pressed in the page's DevTools. */
+  devtoolsInput(tabId: TabId, event: ElectronEvent, input: Input): void
+  /** DevTools asked to open a link (e.g. "Open in new tab" on a resource). */
+  devtoolsOpenUrl(tabId: TabId, url: string): void
 }
+
+/** The device emulation's name on the shared DevTools protocol session. */
+const VIEWPORT_HOLDER = 'viewport'
+const CHROME_MAJOR = process.versions.chrome?.split('.')[0] ?? '0'
 
 const PAGE_WEB_PREFERENCES = {
   sandbox: true,
@@ -89,6 +100,19 @@ export class TabRuntime {
   private stoppedPlayingAt = 0
   /** Set after the user confirmed leaving a page with a beforeunload handler. */
   allowUnloadOnce = false
+  /**
+   * DevTools for this page: their frontend in a view of ours (Electron's
+   * `setDevToolsWebContents`), so they can dock beside the page like
+   * Chrome's. TabManager places the view: in the window next to the page,
+   * or in `devtoolsWindow` when undocked.
+   */
+  devtools: WebContentsView | null = null
+  devtoolsWindow: BaseWindow | null = null
+  /** Device emulation (see setViewport). */
+  private viewport: ViewportSpec | null = null
+  private viewportScale = 1
+  /** What the DevTools protocol was last told, to skip repeats ('' = nothing). */
+  private appliedViewport = ''
 
   constructor(
     readonly tabId: TabId,
@@ -185,6 +209,111 @@ export class TabRuntime {
   /** Abort a pending close (the user chose to stay on the page). */
   cancelClose(): void {
     this.closing = false
+  }
+
+  // -- DevTools -----------------------------------------------------------------
+
+  /** Load DevTools into a view of ours (created here, placed by the caller). */
+  attachDevTools(background: string): WebContentsView {
+    if (this.devtools) return this.devtools
+    const view = new WebContentsView()
+    view.setBackgroundColor(background)
+    view.webContents.on('before-input-event', (event, input) => this.host.devtoolsInput(this.tabId, event, input))
+    this.wc.setDevToolsWebContents(view.webContents)
+    // 'detach': we place the frontend ourselves, and it shows no dock-side menu of its own.
+    this.wc.openDevTools({ mode: 'detach', activate: false })
+    this.devtools = view
+    return view
+  }
+
+  /** Close DevTools and destroy their view and window (Electron leaves both to the owner). */
+  detachDevTools(): void {
+    const view = this.devtools
+    const window = this.devtoolsWindow
+    this.devtools = null
+    this.devtoolsWindow = null
+    if (!view) return
+    if (window && !window.isDestroyed()) {
+      window.contentView.removeChildView(view)
+      window.destroy()
+    }
+    if (!this.wc.isDestroyed()) this.wc.closeDevTools()
+    // Destroying the frontend also detaches it from the page.
+    if (!view.webContents.isDestroyed()) view.webContents.close()
+  }
+
+  // -- device emulation ---------------------------------------------------------
+
+  /**
+   * Lay the page out at another device's viewport, pixel ratio and input
+   * (Chrome's device mode), or back at its own (null). `scale` draws it
+   * smaller when it does not fit the window; layout is unaffected. Over the
+   * DevTools protocol, which keeps it across navigations.
+   */
+  setViewport(spec: ViewportSpec | null, scale = this.viewportScale): void {
+    this.viewport = spec
+    this.viewportScale = spec ? scale : 1
+    this.applyViewport()
+  }
+
+  /** The window fit the emulated viewport at a new scale. */
+  setViewportScale(scale: number): void {
+    if (!this.viewport || Math.abs(scale - this.viewportScale) < 1e-4) return
+    this.viewportScale = scale
+    this.applyViewport()
+  }
+
+  /** CSS pixels → view pixels of the emulated viewport (1 without emulation). */
+  get emulationScale(): number {
+    return this.viewport ? this.viewportScale : 1
+  }
+
+  get emulatedViewport(): ViewportSpec | null {
+    return this.viewport
+  }
+
+  private applyViewport(): void {
+    if (this.wc.isDestroyed()) return
+    const spec = this.viewport
+    const key = spec ? JSON.stringify(spec) : ''
+    const applied = this.appliedViewport
+    const deviceKey = applied.slice(0, applied.lastIndexOf('|'))
+    const next = spec ? `${key}|${this.viewportScale}` : ''
+    if (next === applied) return
+    const dbg = this.wc.debugger
+    // Commands go out in order; none needs the previous one's answer.
+    const send = (method: string, params: Record<string, unknown> = {}) => void dbg.sendCommand(method, params).catch(() => undefined)
+    if (!spec) {
+      this.appliedViewport = ''
+      if (!applied || !dbg.isAttached()) return
+      send('Emulation.clearDeviceMetricsOverride')
+      send('Emulation.setTouchEmulationEnabled', { enabled: false })
+      send('Emulation.setEmitTouchEventsForMouse', { enabled: false })
+      send('Emulation.setUserAgentOverride', { userAgent: '' })
+      releaseDebugger(this.wc, VIEWPORT_HOLDER)
+      return
+    }
+    try {
+      holdDebugger(this.wc, VIEWPORT_HOLDER)
+    } catch (error) {
+      console.error('[viewport] cannot attach the DevTools protocol', error)
+      return
+    }
+    this.appliedViewport = next
+    send('Emulation.setDeviceMetricsOverride', {
+      width: spec.width,
+      height: spec.height,
+      deviceScaleFactor: spec.deviceScaleFactor,
+      mobile: spec.mobile,
+      scale: this.viewportScale,
+      screenWidth: spec.width,
+      screenHeight: spec.height
+    })
+    // Only the fit changed (window resized): the rest stands.
+    if (deviceKey === key) return
+    send('Emulation.setTouchEmulationEnabled', spec.mobile ? { enabled: true, maxTouchPoints: 5 } : { enabled: false })
+    send('Emulation.setEmitTouchEventsForMouse', { enabled: spec.mobile, configuration: spec.mobile ? 'mobile' : 'desktop' })
+    send('Emulation.setUserAgentOverride', { userAgent: viewportUserAgent(spec, CHROME_MAJOR) ?? '' })
   }
 
   private navState() {
@@ -299,7 +428,18 @@ export class TabRuntime {
       host.preventedUnload(tabId)
     })
 
-    wc.once('destroyed', () => host.destroyed(tabId))
+    wc.on('devtools-open-url', (_e, url) => host.devtoolsOpenUrl(tabId, url))
+    // The protocol session went away by itself: emulation goes with it, so apply it again.
+    wc.debugger.on('detach', (_e, reason) => {
+      if (!this.appliedViewport) return
+      this.appliedViewport = ''
+      if (this.viewport && reason !== 'target closed') setImmediate(() => this.applyViewport())
+    })
+
+    wc.once('destroyed', () => {
+      this.detachDevTools()
+      host.destroyed(tabId)
+    })
 
     wc.setWindowOpenHandler((details) => host.windowOpen(tabId, details))
   }

@@ -252,6 +252,17 @@ export interface ShellRpc {
   'pageDialogs.respond': (dialogId: string, accept: boolean, text: string, suppress: boolean) => void
 
   'devtools.toggle': (tabId: TabId) => void
+  /** Dock side, and docked DevTools' width / height (the splitter). */
+  'devtools.setLayout': (opts: { dock?: import('./layout').DevToolsDock; width?: number; height?: number }) => void
+  /** The splitter's menu: where DevTools dock, and close. */
+  'devtools.menu': (tabId: TabId, at: Point) => void
+
+  /** Device emulation for a tab; null turns the device toolbar off. */
+  'viewport.set': (tabId: TabId, spec: import('./viewport').ViewportSpec | null) => void
+  /** The device toolbar on (at the device used last) or off. */
+  'viewport.toggle': (tabId: TabId) => void
+  /** The device toolbar's native menus: the device list, or the pixel ratio and mobile options. */
+  'viewport.menu': (tabId: TabId, which: 'device' | 'options', at: Point) => void
 
   /** State of the agent (MCP) server; waits for a start or stop in progress. */
   'agent.info': () => import('./agent').AgentInfo

@@ -18,8 +18,72 @@ export const LAYOUT = {
    * y, so y = 14 centres them on the 44pt title row (centre 22) and in line
    * with the sidebar header buttons.
    */
-  trafficLights: { x: 16, y: 14 }
+  trafficLights: { x: 16, y: 14 },
+  /** Docked DevTools: smallest size, the page's smallest size beside them, and default sizes. */
+  devtoolsMin: 200,
+  devtoolsPageMin: 240,
+  devtoolsWidth: 480,
+  devtoolsHeight: 320,
+  devtoolsMax: 4000,
+  /** Device toolbar over an emulated viewport, and the margin around the device. */
+  deviceBar: 40,
+  devicePad: 16
 } as const
+
+/** Where DevTools open: docked on a side of the page card, or in their own window. */
+export type DockSide = 'right' | 'bottom' | 'left'
+export type DevToolsDock = DockSide | 'undocked'
+export const DEVTOOLS_DOCKS = ['right', 'bottom', 'left', 'undocked'] as const satisfies readonly DevToolsDock[]
+
+export function clampDevtoolsSize(size: number, fallback: number): number {
+  if (!Number.isFinite(size)) return fallback
+  return Math.round(Math.min(LAYOUT.devtoolsMax, Math.max(LAYOUT.devtoolsMin, size)))
+}
+
+/**
+ * Docked DevTools' size along the split, given the card's length along it:
+ * the requested size, leaving the page at least `devtoolsPageMin` (DevTools
+ * keep their minimum even when that squeezes the page). The shell computes
+ * the same thing in CSS (`max(min, min(size, 100% - page - gap))`), so the
+ * two always agree to the pixel.
+ */
+export function devtoolsExtent(cardLength: number, size: number): number {
+  return Math.max(LAYOUT.devtoolsMin, Math.min(size, cardLength - LAYOUT.devtoolsPageMin - LAYOUT.gutter))
+}
+
+/** The page card split between the page and docked DevTools, a gutter apart (the gutter is the resize handle). */
+export function splitCard(card: Rect, dock: { side: DockSide; size: number } | null): { page: Rect; devtools: Rect | null } {
+  if (!dock) return { page: card, devtools: null }
+  const gap = LAYOUT.gutter
+  if (dock.side === 'bottom') {
+    const h = devtoolsExtent(card.height, dock.size)
+    return {
+      page: { ...card, height: Math.max(0, card.height - h - gap) },
+      devtools: { x: card.x, y: card.y + card.height - h, width: card.width, height: h }
+    }
+  }
+  const w = devtoolsExtent(card.width, dock.size)
+  const pageWidth = Math.max(0, card.width - w - gap)
+  return dock.side === 'right'
+    ? { page: { ...card, width: pageWidth }, devtools: { x: card.x + card.width - w, y: card.y, width: w, height: card.height } }
+    : { page: { ...card, x: card.x + card.width - pageWidth, width: pageWidth }, devtools: { x: card.x, y: card.y, width: w, height: card.height } }
+}
+
+/**
+ * An emulated viewport inside the page area: below the device toolbar,
+ * centered, scaled down (never up) to fit. Relative to the area. The shell
+ * runs the same function on the same integers to cut its hole for the page.
+ */
+export function viewportFrame(area: Size, viewport: Size): Rect & { scale: number } {
+  const pad = LAYOUT.devicePad
+  const top = LAYOUT.deviceBar + pad
+  const availWidth = Math.max(1, area.width - pad * 2)
+  const availHeight = Math.max(1, area.height - top - pad)
+  const scale = Math.min(1, availWidth / viewport.width, availHeight / viewport.height)
+  const width = Math.max(1, Math.floor(viewport.width * scale))
+  const height = Math.max(1, Math.floor(viewport.height * scale))
+  return { x: Math.floor((area.width - width) / 2), y: top, width, height, scale }
+}
 
 export interface Size {
   width: number

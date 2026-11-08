@@ -21,7 +21,10 @@ export const DEFAULT_WINDOW_STATE: Omit<WindowState, 'activeSpaceId'> = {
   sidebarCollapsed: false,
   fullscreen: false,
   htmlFullscreen: false,
-  focused: true
+  focused: true,
+  devtoolsDock: 'right',
+  devtoolsWidth: LAYOUT.devtoolsWidth,
+  devtoolsHeight: LAYOUT.devtoolsHeight
 }
 
 /** Palette offered when creating a space. */

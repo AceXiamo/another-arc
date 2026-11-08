@@ -1,5 +1,6 @@
 import { app, Menu, type MenuItemConstructorOptions } from 'electron'
 import type { Translate } from '@shared/i18n'
+import type { DevToolsDock } from '@shared/layout'
 import { TAB_SELECT_COMMANDS, type CommandId, type CommandRunner } from './commands'
 import { RESERVED_ACCELERATORS } from './keymap'
 
@@ -9,7 +10,7 @@ import { RESERVED_ACCELERATORS } from './keymap'
  * registered here (`registerAccelerator: false`): `before-input-event`
  * already handled them, so they can never fire twice.
  */
-export function buildAppMenu(run: CommandRunner, opts: { isDev: boolean; t: Translate }): Menu {
+export function buildAppMenu(run: CommandRunner, opts: { isDev: boolean; t: Translate; devtoolsDock: DevToolsDock }): Menu {
   const { t } = opts
   const appName = { app: app.name }
   const item = (label: string, command: CommandId, accelerator?: string): MenuItemConstructorOptions => {
@@ -31,6 +32,13 @@ export function buildAppMenu(run: CommandRunner, opts: { isDev: boolean; t: Tran
     visible: false,
     acceleratorWorksWhenHidden: true,
     click: () => run(command)
+  })
+
+  const dock = (label: string, side: DevToolsDock): MenuItemConstructorOptions => ({
+    label,
+    type: 'radio',
+    checked: opts.devtoolsDock === side,
+    click: () => run(`devtools.dock.${side}`)
   })
 
   const template: MenuItemConstructorOptions[] = [
@@ -113,6 +121,18 @@ export function buildAppMenu(run: CommandRunner, opts: { isDev: boolean; t: Tran
         { type: 'separator' },
         item(t('menu.devTools'), 'page.devtools', 'Cmd+Alt+I'),
         hidden('page.devtools', 'Cmd+Alt+J'),
+        item(t('menu.deviceToolbar'), 'page.deviceToolbar', 'Cmd+Shift+M'),
+        {
+          label: t('menu.devToolsDock'),
+          submenu: [
+            dock(t('menu.dockRight'), 'right'),
+            dock(t('menu.dockBottom'), 'bottom'),
+            dock(t('menu.dockLeft'), 'left'),
+            dock(t('menu.dockUndocked'), 'undocked'),
+            { type: 'separator' },
+            item(t('menu.toggleDockSide'), 'devtools.dock.toggle', 'Cmd+Shift+D')
+          ]
+        },
         ...(opts.isDev ? [item(t('menu.shellDevTools'), 'shell.devtools', 'Cmd+Alt+Shift+I')] : [])
       ]
     },

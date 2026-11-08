@@ -5,7 +5,7 @@ import { IMPORT_BROWSERS } from '@shared/ext-import'
 import type { Translate } from '@shared/i18n'
 import { outPath } from '../app/environment'
 import { describeError } from '../app/i18n'
-import { SURFACES } from '@shared/layout'
+import { DEVTOOLS_DOCKS, SURFACES } from '@shared/layout'
 import { isSavedTab } from '@shared/tabs'
 import { SPACE_APPEARANCES, THEME_LIMITS } from '@shared/theme'
 import { summarizeSidebar } from '../import/arc-sidebar'
@@ -13,9 +13,10 @@ import { importArcSidebarWithDialogs, loadArcSidebar } from '../import/sidebar-i
 import { SITE_SETTING_IDS } from '@shared/site-settings'
 import { INTERNAL_PAGES, isInternalUrl, SEARCH_ENGINES, type InternalPage } from '@shared/url'
 import type { SearchEngineId } from '@shared/types'
+import { presetSpec, sanitizeViewport, VIEWPORT_PRESETS, type DeviceKind, type ViewportSpec } from '@shared/viewport'
 import type { Browser } from '../app/browser'
 import type { RpcRouter } from './router'
-import { tuple, v, type Validator } from './validate'
+import { tuple, v, ValidationError, type Validator } from './validate'
 
 const id = v.id()
 const color = (value: unknown, path: string) => {
@@ -23,6 +24,12 @@ const color = (value: unknown, path: string) => {
   return value
 }
 const point = v.object({ x: v.number(), y: v.number() })
+/** Clamped and normalized by sanitizeViewport. */
+const viewportSpec: Validator<ViewportSpec> = (value, path) => {
+  const spec = sanitizeViewport(value)
+  if (!spec) throw new ValidationError(path, 'viewport')
+  return spec
+}
 // Shape only: numbers are clamped and merged by sanitizeSpaceTheme in TabManager.
 const spaceTheme = v.object({
   gradient: v.optional(v.array(color, THEME_LIMITS.gradientStops)),
@@ -139,6 +146,13 @@ export function registerHandlers(router: RpcRouter, b: Browser): void {
         { label: t('siteMenu.copyUrl'), enabled: !isInternalUrl(tab.url), click: () => tabs.copyUrl(tabId) },
         { label: t('siteMenu.print'), enabled: live, click: () => tabs.print(tabId) },
         { label: t('siteMenu.devtools'), enabled: live, click: () => tabs.toggleDevTools(tabId) },
+        {
+          label: t('siteMenu.deviceToolbar'),
+          type: 'checkbox',
+          checked: !!tab.viewport,
+          enabled: live || !!tab.viewport,
+          click: () => b.toggleDeviceToolbar(tabId)
+        },
         { type: 'separator' },
         { label: t('siteMenu.siteSettings'), click: () => b.openInternal('settings') }
       ],
@@ -567,6 +581,75 @@ export function registerHandlers(router: RpcRouter, b: Browser): void {
   router.handle('find.stop', tuple(id), (_c, tabId) => tabs.stopFind(tabId))
   router.handle('zoom.adjust', tuple(id, v.oneOf([-1, 0, 1] as const)), (_c, tabId, delta) => tabs.adjustZoom(tabId, delta))
   router.handle('devtools.toggle', tuple(id), (_c, tabId) => tabs.toggleDevTools(tabId))
+  router.handle(
+    'devtools.setLayout',
+    tuple(
+      v.object({
+        dock: v.optional(v.oneOf(DEVTOOLS_DOCKS)),
+        width: v.optional(v.number({ min: 0, max: 100_000 })),
+        height: v.optional(v.number({ min: 0, max: 100_000 }))
+      })
+    ),
+    (_c, opts) => b.setDevTools(opts)
+  )
+  router.handle('devtools.menu', tuple(id, point), (_c, tabId, at) =>
+    popupAt(b.devtoolsDockItems(tabs.model.getTab(tabId) ? tabId : null), at)
+  )
+
+  // -- device emulation (the device toolbar) ----------------------------------
+  router.handle('viewport.set', tuple(id, v.nullable(viewportSpec)), (_c, tabId, spec) => b.setViewport(tabId, spec))
+  router.handle('viewport.toggle', tuple(id), (_c, tabId) => b.toggleDeviceToolbar(tabId))
+  router.handle('viewport.menu', tuple(id, v.oneOf(['device', 'options'] as const), point), (_c, tabId, which, at) => {
+    const current = tabs.model.getTab(tabId)?.viewport
+    if (!current) return
+    const set = (spec: ViewportSpec) => b.setViewport(tabId, spec)
+    if (which === 'device') {
+      const group = (kind: DeviceKind, label: string): MenuItemConstructorOptions[] => [
+        { type: 'separator' },
+        { label, enabled: false },
+        ...VIEWPORT_PRESETS.filter((p) => p.kind === kind).map(
+          (p): MenuItemConstructorOptions => ({
+            label: `${p.name}  ${p.width}×${p.height}`,
+            type: 'radio',
+            checked: current.preset === p.id,
+            // Picking the device it already is keeps its orientation.
+            click: () => current.preset !== p.id && set(presetSpec(p.id)!)
+          })
+        )
+      ]
+      popupAt(
+        [
+          { label: t('viewport.responsive'), type: 'radio', checked: current.preset === null, click: () => set({ ...current, preset: null }) },
+          ...group('phone', t('viewport.group.phone')),
+          ...group('tablet', t('viewport.group.tablet')),
+          ...group('desktop', t('viewport.group.desktop'))
+        ],
+        at
+      )
+      return
+    }
+    const dpr = (value: number, label: string): MenuItemConstructorOptions => ({
+      label,
+      type: 'radio',
+      checked: current.deviceScaleFactor === value,
+      click: () => set({ ...current, deviceScaleFactor: value })
+    })
+    popupAt(
+      [
+        { label: t('viewport.dpr'), enabled: false },
+        dpr(0, t('viewport.dpr.default')),
+        dpr(1, '1x'),
+        dpr(2, '2x'),
+        dpr(3, '3x'),
+        ...(![0, 1, 2, 3].includes(current.deviceScaleFactor) ? [dpr(current.deviceScaleFactor, `${current.deviceScaleFactor}x`)] : []),
+        { type: 'separator' },
+        { label: t('viewport.mobile'), type: 'checkbox', checked: current.mobile, click: () => set({ ...current, mobile: !current.mobile }) },
+        { type: 'separator' },
+        { label: t('viewport.reload'), click: () => tabs.reload(tabId) }
+      ],
+      at
+    )
+  })
 
   // -- permissions --------------------------------------------------------------
   router.handle(

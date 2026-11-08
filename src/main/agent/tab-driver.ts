@@ -5,6 +5,7 @@ import type { WebContents, WebContentsView } from 'electron'
 import type { Rect } from '@shared/layout'
 import type { PageDialog } from '@shared/types'
 import { outPath } from '../app/environment'
+import { debuggerShared, holdDebugger, releaseDebugger } from '../tabs/debugger'
 import { ToolError } from './mcp-server'
 
 // One live tab as an agent drives it. Reading goes through the page runtime
@@ -15,6 +16,8 @@ import { ToolError } from './mcp-server'
 // `wake`). The DevTools protocol is attached only for what nothing else can
 // do: waking, network logs, file inputs, file choosers.
 
+/** The agent's name on the shared DevTools protocol session. */
+const DEBUGGER_HOLDER = 'agent'
 /** Isolated world of the page runtime (Electron's context isolation uses 999). */
 const AGENT_WORLD = 1001
 const PAGE_TIMEOUT_MS = 10_000
@@ -90,6 +93,8 @@ export interface DriverHost {
   suppressContextMenu(wc: WebContents, ms: number): void
   /** The alert / confirm / prompt the page is blocked on, if any. */
   pendingDialog(): PageDialog | undefined
+  /** Device emulation: the emulated viewport (CSS px at zoom 1) and the scale its view is drawn at. */
+  emulation(): { width: number; height: number; scale: number } | null
 }
 
 let runtimeSource: string | null = null
@@ -308,6 +313,19 @@ export class TabDriver {
     return run
   }
 
+  /** View pixels per CSS pixel, for input: page zoom × the fit of an emulated viewport. */
+  private get inputScale(): number {
+    return this.wc.getZoomFactor() * (this.host.emulation()?.scale ?? 1)
+  }
+
+  /** The page's viewport before any fit: the emulated size, or the view's. Captures come at this size. */
+  viewportSize(): { width: number; height: number } {
+    const emulated = this.host.emulation()
+    if (emulated) return { width: emulated.width, height: emulated.height }
+    const { width, height } = this.view.getBounds()
+    return { width, height }
+  }
+
   /** Never-shown views are 0×0: give them the card's size so the page lays out and can be clicked. */
   ensureSized(): void {
     const bounds = this.view.getBounds()
@@ -443,8 +461,8 @@ export class TabDriver {
     y: number,
     extra: { button?: 'left' | 'right' | 'middle'; clickCount?: number; modifiers?: string[] } = {}
   ): void {
-    const zoom = this.wc.getZoomFactor()
-    this.wc.sendInputEvent({ type, x: Math.round(x * zoom), y: Math.round(y * zoom), ...extra } as Electron.MouseInputEvent)
+    const scale = this.inputScale
+    this.wc.sendInputEvent({ type, x: Math.round(x * scale), y: Math.round(y * scale), ...extra } as Electron.MouseInputEvent)
   }
 
   async click(
@@ -490,11 +508,11 @@ export class TabDriver {
     type State = { container: string | null; top: number; left: number; height: number; view: number }
     const before = await this.call<State>('scrollState', at)
     await this.showCursor(at)
-    const zoom = this.wc.getZoomFactor()
+    const scale = this.inputScale
     this.wc.sendInputEvent({
       type: 'mouseWheel',
-      x: Math.round(at.x * zoom),
-      y: Math.round(at.y * zoom),
+      x: Math.round(at.x * scale),
+      y: Math.round(at.y * scale),
       deltaX: -dx,
       deltaY: -dy,
       canScroll: true,
@@ -589,8 +607,9 @@ export class TabDriver {
       rect = shot.rect
       clipped = shot.clipped
     }
-    const bounds = this.view.getBounds()
-    const css = rect ?? { x: 0, y: 0, width: bounds.width / zoom, height: bounds.height / zoom }
+    // An emulated viewport is captured at its own size, not the fit on screen.
+    const size = this.viewportSize()
+    const css = rect ?? { x: 0, y: 0, width: size.width / zoom, height: size.height / zoom }
     const hidOverlay = await this.call<boolean>('overlayVisible', { visible: false }).catch(() => false)
     let image: Electron.NativeImage
     try {
@@ -644,19 +663,31 @@ export class TabDriver {
     if (this.debuggerAttached) return
     const dbg = this.wc.debugger
     try {
-      if (!dbg.isAttached()) dbg.attach('1.3')
+      // Shared with device emulation (see tabs/debugger.ts).
+      holdDebugger(this.wc, DEBUGGER_HOLDER)
     } catch (error) {
       throw new ToolError(`Cannot inspect this tab (${error instanceof Error ? error.message : String(error)}). Close its DevTools and retry.`)
     }
     this.debuggerAttached = true
-    dbg.on('message', (_event, method: string, params: Record<string, unknown>) => this.onProtocolEvent(method, params))
-    dbg.on('detach', () => {
-      this.debuggerAttached = false
-      this.network = null
-      // Focus emulation went with the session.
-      this.awake = null
-    })
+    dbg.on('message', this.onProtocolMessage)
+    dbg.on('detach', this.onDebuggerDetach)
     void dbg.sendCommand('Page.enable').catch(() => undefined)
+  }
+
+  private readonly onProtocolMessage = (_event: unknown, method: string, params: Record<string, unknown>) => this.onProtocolEvent(method, params)
+
+  private readonly onDebuggerDetach = () => {
+    this.debuggerAttached = false
+    this.network = null
+    // Focus emulation went with the session.
+    this.awake = null
+    this.unlisten()
+  }
+
+  private unlisten(): void {
+    if (!this.alive) return
+    this.wc.debugger.off('message', this.onProtocolMessage)
+    this.wc.debugger.off('detach', this.onDebuggerDetach)
   }
 
   private async cdp(method: string, params: Record<string, unknown> = {}): Promise<Record<string, unknown>> {
@@ -856,15 +887,19 @@ export class TabDriver {
   detach(): void {
     if (this.chooserTimer) clearTimeout(this.chooserTimer)
     if (this.sleepTimer) clearTimeout(this.sleepTimer)
+    const wasAwake = this.awake !== null
     this.sleepTimer = null
     this.awake = null
     this.awakeUntil = 0
     if (this.debuggerAttached && this.alive) {
-      try {
-        this.wc.debugger.detach()
-      } catch {
-        // Already gone.
+      this.unlisten()
+      if (debuggerShared(this.wc, DEBUGGER_HOLDER)) {
+        // Device emulation keeps the session: turn off what the agent turned on.
+        const dbg = this.wc.debugger
+        if (this.network) void dbg.sendCommand('Network.disable').catch(() => undefined)
+        if (wasAwake) void dbg.sendCommand('Emulation.setFocusEmulationEnabled', { enabled: false }).catch(() => undefined)
       }
+      releaseDebugger(this.wc, DEBUGGER_HOLDER)
     }
     this.debuggerAttached = false
     this.network = null

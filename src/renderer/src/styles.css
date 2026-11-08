@@ -299,9 +299,11 @@
   /*
    * Window chrome (features/theme/ChromeBackdrop.tsx): the theme gradient over
    * the tinted base everywhere except a hole exactly where ContentArea's card
-   * is (--hole-left / --hole-inset / --hole-radius), so the page shows through
-   * when the shell is raised over it. A path clip, not a mask: it paints into
-   * the shell's root layer with no extra compositing layer or render surface.
+   * is (--a* insets: left, top, right, bottom; --hr the radius), so the page
+   * shows through when the shell is raised over it. With DevTools docked
+   * there is a second hole where their view is (--b*). A path clip, not a
+   * mask: it paints into the shell's root layer with no extra compositing
+   * layer or render surface.
    */
   .chrome-backdrop {
     position: absolute;
@@ -309,8 +311,6 @@
     pointer-events: none;
     background-color: var(--chrome);
     background-image: var(--chrome-image);
-    --hl: var(--hole-left);
-    --hi: var(--hole-inset);
     --hr: var(--hole-radius);
     clip-path: shape(
       evenodd from 0 0,
@@ -318,15 +318,45 @@
       vline to 100%,
       hline to 0,
       close,
-      move to calc(var(--hl) + var(--hr)) var(--hi),
-      hline to calc(100% - var(--hi) - var(--hr)),
-      arc to calc(100% - var(--hi)) calc(var(--hi) + var(--hr)) of var(--hr) cw,
-      vline to calc(100% - var(--hi) - var(--hr)),
-      arc to calc(100% - var(--hi) - var(--hr)) calc(100% - var(--hi)) of var(--hr) cw,
-      hline to calc(var(--hl) + var(--hr)),
-      arc to var(--hl) calc(100% - var(--hi) - var(--hr)) of var(--hr) cw,
-      vline to calc(var(--hi) + var(--hr)),
-      arc to calc(var(--hl) + var(--hr)) var(--hi) of var(--hr) cw,
+      move to calc(var(--al) + var(--hr)) var(--at),
+      hline to calc(100% - var(--ar) - var(--hr)),
+      arc to calc(100% - var(--ar)) calc(var(--at) + var(--hr)) of var(--hr) cw,
+      vline to calc(100% - var(--ab) - var(--hr)),
+      arc to calc(100% - var(--ar) - var(--hr)) calc(100% - var(--ab)) of var(--hr) cw,
+      hline to calc(var(--al) + var(--hr)),
+      arc to var(--al) calc(100% - var(--ab) - var(--hr)) of var(--hr) cw,
+      vline to calc(var(--at) + var(--hr)),
+      arc to calc(var(--al) + var(--hr)) var(--at) of var(--hr) cw,
+      close
+    );
+  }
+
+  .chrome-backdrop[data-split] {
+    clip-path: shape(
+      evenodd from 0 0,
+      hline to 100%,
+      vline to 100%,
+      hline to 0,
+      close,
+      move to calc(var(--al) + var(--hr)) var(--at),
+      hline to calc(100% - var(--ar) - var(--hr)),
+      arc to calc(100% - var(--ar)) calc(var(--at) + var(--hr)) of var(--hr) cw,
+      vline to calc(100% - var(--ab) - var(--hr)),
+      arc to calc(100% - var(--ar) - var(--hr)) calc(100% - var(--ab)) of var(--hr) cw,
+      hline to calc(var(--al) + var(--hr)),
+      arc to var(--al) calc(100% - var(--ab) - var(--hr)) of var(--hr) cw,
+      vline to calc(var(--at) + var(--hr)),
+      arc to calc(var(--al) + var(--hr)) var(--at) of var(--hr) cw,
+      close,
+      move to calc(var(--bl) + var(--hr)) var(--bt),
+      hline to calc(100% - var(--br) - var(--hr)),
+      arc to calc(100% - var(--br)) calc(var(--bt) + var(--hr)) of var(--hr) cw,
+      vline to calc(100% - var(--bb) - var(--hr)),
+      arc to calc(100% - var(--br) - var(--hr)) calc(100% - var(--bb)) of var(--hr) cw,
+      hline to calc(var(--bl) + var(--hr)),
+      arc to var(--bl) calc(100% - var(--bb) - var(--hr)) of var(--hr) cw,
+      vline to calc(var(--bt) + var(--hr)),
+      arc to calc(var(--bl) + var(--hr)) var(--bt) of var(--hr) cw,
       close
     );
   }

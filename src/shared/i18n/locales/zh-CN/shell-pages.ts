@@ -73,7 +73,21 @@ const zh: Record<keyof typeof en, string> = {
   'pageDialog.says': '{host} 显示',
   'pageDialog.thisPageSays': '此网页显示',
   'pageDialog.ok': '确定',
-  'pageDialog.suppress': '禁止此网页再显示对话框'
+  'pageDialog.suppress': '禁止此网页再显示对话框',
+
+  // Device toolbar and docked DevTools
+  'device.pick': '设备',
+  'device.responsive': '自定义尺寸',
+  'device.width': '宽度',
+  'device.height': '高度',
+  'device.rotate': '旋转',
+  'device.scale': '为放进窗口而缩小显示的比例',
+  'device.options': '像素比与设备类型',
+  'device.dprDefault': '屏幕像素比',
+  'device.mobile': '移动设备',
+  'device.desktop': '桌面',
+  'device.close': '关闭设备模拟',
+  'devtools.splitter.hint': '拖动调整大小 · 右键更改开发者工具位置'
 }
 
 export default zh

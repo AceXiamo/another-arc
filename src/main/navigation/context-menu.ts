@@ -5,6 +5,8 @@ export interface PageMenuActions {
   openUrl(url: string, background: boolean): void
   search(text: string): void
   extensionItems(): MenuItem[]
+  /** Open the page's DevTools at the element under (x, y); without it they open in a window of their own. */
+  inspect?(x: number, y: number): void
   searchEngineName: string
   t: Translate
 }
@@ -99,7 +101,7 @@ export function showPageContextMenu(wc: WebContents, params: ContextMenuParams, 
 
   const menu = Menu.buildFromTemplate(items)
   for (const item of actions.extensionItems()) menu.append(item)
-  appendInspect(menu, wc, params, t)
+  appendInspect(menu, wc, params, t, actions.inspect)
   menu.popup({ frame: params.frame ?? undefined })
 }
 
@@ -107,7 +109,7 @@ function sepItem(): MenuItemConstructorOptions {
   return { type: 'separator' }
 }
 
-function appendInspect(menu: Menu, wc: WebContents, params: ContextMenuParams, t: Translate): void {
+function appendInspect(menu: Menu, wc: WebContents, params: ContextMenuParams, t: Translate, inspect?: (x: number, y: number) => void): void {
   if (menu.items.length && menu.items[menu.items.length - 1]!.type !== 'separator') {
     menu.append(new MenuItem({ type: 'separator' }))
   }
@@ -115,6 +117,7 @@ function appendInspect(menu: Menu, wc: WebContents, params: ContextMenuParams, t
     new MenuItem({
       label: t('ctx.inspect'),
       click: () => {
+        if (inspect) return inspect(params.x, params.y)
         if (!wc.isDevToolsOpened()) wc.openDevTools({ mode: 'detach' })
         wc.inspectElement(params.x, params.y)
       }

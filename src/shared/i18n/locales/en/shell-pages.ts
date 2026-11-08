@@ -73,5 +73,19 @@ export default {
   'pageDialog.says': '{host} says',
   'pageDialog.thisPageSays': 'This page says',
   'pageDialog.ok': 'OK',
-  'pageDialog.suppress': 'Don’t let this page show more dialogs'
+  'pageDialog.suppress': 'Don’t let this page show more dialogs',
+
+  // Device toolbar and docked DevTools
+  'device.pick': 'Device',
+  'device.responsive': 'Responsive',
+  'device.width': 'Width',
+  'device.height': 'Height',
+  'device.rotate': 'Rotate',
+  'device.scale': 'Shown at this size to fit the window',
+  'device.options': 'Pixel ratio and device type',
+  'device.dprDefault': 'Screen DPR',
+  'device.mobile': 'Mobile',
+  'device.desktop': 'Desktop',
+  'device.close': 'Close device toolbar',
+  'devtools.splitter.hint': 'Drag to resize · Right-click to move Developer Tools'
 } satisfies Record<string, string>

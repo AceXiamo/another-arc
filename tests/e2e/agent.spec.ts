@@ -352,3 +352,79 @@ test('keeps snapshots and reading small on big pages', async () => {
   // A cut says where the later sections start.
   expect(await tool('read_page', { tabId, maxChars: 2000 })).toMatch(/^- ## Pricing \(offset \d+\)$/m)
 })
+
+/** The full id of a tab from its short id. */
+function fullId(short: string): Promise<string> {
+  return inMain(app, (b, s: string) => [...b.tabs.model.tabs.keys()].find((id: string) => id.startsWith(s)), short)
+}
+
+test('bookmarks: saves URLs, files tabs into folders and favorites, and removes them', async () => {
+  const added = await tool('add_bookmark', { url: `${site}/docs`, title: 'Docs page' })
+  expect(added).toContain('to the pinned tabs')
+  const bookmark = /\[([0-9a-f]{8})\]/.exec(added)![1]!
+
+  const created = await tool('create_folder', { name: 'Research' })
+  const folder = /Created folder \[([0-9a-f]{8})\] "Research"/.exec(created)![1]!
+  expect(await tool('move_tab', { tabId: bookmark, to: folder })).toContain('folder "Research"')
+  let listed = await tool('list_tabs')
+  expect(listed).toMatch(new RegExp(`- Folder \\[${folder}\\] "Research"\\n\\s+- \\[${bookmark}\\] "Docs page"`))
+  // Not loaded: a bookmark costs nothing until it is opened.
+  expect(await inMain(app, (b, id: string) => b.tabs.runtime(id) === undefined, await fullId(bookmark))).toBe(true)
+
+  // Folders by name, nested and moved back out, renamed and collapsed.
+  const sub = /\[([0-9a-f]{8})\]/.exec(await tool('create_folder', { name: 'Sub', parentId: 'Research' }))![1]!
+  expect(await tool('update_folder', { folderId: sub, parentId: 'top' })).toContain('moved to the top level')
+  expect(await tool('update_folder', { folderId: 'Research', name: 'Reading', collapsed: true })).toContain('renamed to "Reading", collapsed')
+  await expect(tool('update_folder', { folderId: 'Reading', parentId: 'Reading' })).rejects.toThrow('inside itself')
+
+  // An open tab becomes a favorite, then an ordinary tab again.
+  const opened = /\[([0-9a-f]{8})\]/.exec(await tool('open_tab', { url: `${site}/docs` }))![1]!
+  expect(await tool('move_tab', { tabId: opened, to: 'favorites' })).toContain('the favorites')
+  expect(await tool('move_tab', { tabId: opened, to: 'tabs' })).toContain('the tabs')
+  expect(await inMain(app, (b, id: string) => b.tabs.model.getTab(id).savedUrl, await fullId(opened))).toBe('')
+
+  // Closing a bookmark keeps it; remove: true deletes it.
+  expect(await tool('close_tab', { tabId: bookmark })).toContain('the bookmark stays')
+  expect(await tool('list_tabs')).toContain(`[${bookmark}]`)
+  expect(await tool('close_tab', { tabId: bookmark, remove: true })).toContain('from the sidebar')
+  listed = await tool('list_tabs')
+  expect(listed).not.toContain(`[${bookmark}]`)
+
+  await tool('add_bookmark', { url: `${site}/one`, to: 'Reading' })
+  expect(await tool('delete_folder', { folderId: 'Reading' })).toBe('Deleted folder "Reading" and 1 bookmark in it.')
+  await tool('delete_folder', { folderId: sub })
+  expect(await tool('list_tabs')).not.toContain('Folder')
+  await tool('close_tab', { tabId: opened })
+})
+
+test('emulates devices for responsive checks, and opens DevTools for the user', async () => {
+  const tabId = /\[([0-9a-f]{8})\]/.exec(await tool('open_tab', { url: site }))![1]!
+  const page = (code: string) => tool('evaluate', { tabId, script: code })
+
+  expect(await tool('set_viewport', { tabId, preset: 'iphone-se' })).toContain('Emulating iPhone SE (375×667 @2x), mobile with touch')
+  expect(await page('navigator.maxTouchPoints')).toBe('5')
+  expect(await tool('set_viewport', { tabId, width: 800, height: 600, mobile: false })).toContain('Emulating 800×600 @2x')
+  expect(await page('innerWidth')).toBe('800')
+  expect(await tool('screenshot', { tabId })).toContain('Viewport screenshot, 800×600 px')
+  expect(await tool('list_tabs')).toContain('emulating 800×600')
+
+  // On screen and bigger than the window, the page is drawn smaller; clicks still land.
+  await tool('select_tab', { tabId })
+  await tool('set_viewport', { tabId, preset: 'desktop-qhd' })
+  const full = await fullId(tabId)
+  expect(await inMain(app, (b, id: string) => b.tabs.runtime(id).emulationScale, full)).toBeLessThan(1)
+  expect(await page('innerWidth')).toBe('2560')
+  const ref = refOf(await tool('snapshot', { tabId }), '"Open the card"')
+  await tool('click', { tabId, ref })
+  expect(await page('document.querySelector(".card").textContent')).toBe('card opened')
+
+  // DevTools on an element, for the user to look at.
+  expect(await tool('devtools', { tabId, ref })).toMatch(/Opened DevTools on .* docked right/)
+  expect(await inMain(app, (b, id: string) => b.tabs.devtoolsOpen(id), full)).toBe(true)
+  await tool('devtools', { tabId, open: false })
+  expect(await inMain(app, (b, id: string) => b.tabs.devtoolsOpen(id), full)).toBe(false)
+
+  expect(await tool('set_viewport', { tabId, reset: true })).toContain("back at the window's size")
+  expect(Number(await page('innerWidth'))).toBeLessThan(2560)
+  await tool('close_tab', { tabId })
+})

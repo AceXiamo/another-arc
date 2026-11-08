@@ -89,6 +89,15 @@ BaseWindow (hiddenInset 标题栏，红绿灯在侧边栏左上)
 - **不阻塞主进程**：main 只记下回调，页面在自己的渲染进程里等；没有原生模态循环，MCP 服务等照常运行。
 - 测试注意：Playwright 通过 CDP 连着每个页面，没有 `dialog` 监听时会立刻替你把对话框关掉（confirm 返回 false、什么都看不到），所以测网页对话框要先 `app.context().on('dialog', () => {})`，交给应用处理。同理，CDP 的 `Page.handleJavaScriptDialog` 会绕过我们直接回答页面，外壳里的 sheet 要等下一次导航或切换标签才消失。
 
+## DevTools 与设备模拟
+
+- **DevTools 装在我们自己的视图里**：`webContents.setDevToolsWebContents(view.webContents)` 再 `openDevTools({ mode: 'detach' })`，前端加载进 `TabRuntime.devtools` 这个 WebContentsView。Electron 自带的停靠只在它管理的视图里，没法和我们的卡片布局配合；`detach` 模式下前端也不显示它自己的停靠菜单和设备工具栏按钮（两者都以 `can_dock` 为条件），停靠位置由我们的菜单决定。打开时才创建视图，关闭时销毁（Electron 不替我们销毁外部前端）；`isDevToolsOpened()` 对外部前端一律返回 false，所以开关状态看 `rt.devtools`，模型里的 `TabState.devtools` 只给外壳用、不持久化。
+- **停靠方式**（`WindowState.devtoolsDock`，和宽度、高度一起存在设置表 `devtools.layout`）：右、下、左是在页面卡片里切出一块（`splitCard`，`src/shared/layout.ts`），中间隔一个 gutter 当拖拽条；「独立窗口」是把**同一个视图**挪进一个自建的 BaseWindow（位置记在 `devtools.windowBounds`）。所以换位置不重开 DevTools，选中的元素、打开的面板都还在，和 Chrome 一样。⌘⇧D 在上次停靠的边和独立窗口之间切换；独立窗口里 ⌘W、⌘⌥I 关闭的是它自己。
+- **外壳和 main 同一套算术**：main 用 `splitCard` 放视图；外壳的 `cardParts`（`lib/card-layout.ts`）把同一个公式写成 CSS（`max(最小, min(尺寸, 100% − 页面最小 − gutter))`），都是整数，所以两个洞（`ChromeBackdrop` 的 clip-path 变成双洞）、拖拽条和视图逐像素对齐，窗口缩放时也是同一帧，不用量 DOM。拖拽时只改 CSS 变量，main 每帧收一次。
+- **设备模拟**（设备工具栏，⌘⇧M）：走 DevTools 协议的 `Emulation.setDeviceMetricsOverride`（+ 触摸、移动版 UA），跨导航保持，比 `enableDeviceEmulation` 可靠（后者直接打到 frame widget 上，跨站导航换 widget 就丢了）。页面视图缩成模拟尺寸放在卡片里、工具栏下方居中，放不下就用 `scale` 参数整体缩小显示，排版仍按模拟尺寸（`viewportFrame`）。外壳在 `DeviceFrame` 里用同一个函数、同样的整数算出洞的位置，ResizeObserver 回调里直接改样式，所以和视图同帧移动。状态在 `TabState.viewport`，不持久化；上次用的设备记在 `viewport.last`。
+- **协议会话是共享的**：一个 WebContents 只有一个 `debugger`，断开会把挂在上面的东西（模拟、Agent 的网络记录）一起清掉。`tabs/debugger.ts` 按名字持有（`agent`、`viewport`），最后一个放手的才断开；Agent 放手时如果模拟还在用，就自己关掉网络记录和焦点模拟。
+- **Agent 的坐标**：模拟缩小显示时，输入事件的坐标是 CSS px × 页面缩放 × 模拟缩放；`capturePage` 拿到的是模拟视口原尺寸的图，所以截图按模拟尺寸算。
+
 ## 持久化
 
 - 使用 Electron 自带 Node 的 **`node:sqlite`**（无需原生模块编译），WAL + `synchronous=NORMAL`，所有语句预编译缓存。
@@ -156,6 +165,8 @@ BaseWindow (hiddenInset 标题栏，红绿灯在侧边栏左上)
 - **后台标签也能用**：从没显示过的视图是 0×0，页面不排版，所以 Agent 第一次碰它时给它卡片大小（不挂到窗口上）。光有大小还不够：后台标签是 hidden 的（见上文），不跑 rAF、IntersectionObserver 和 CSS 过渡，定时器被节流；从没画过一帧的页面还会丢掉输入（点击、按键都没反应，只有 `insertText` 能进去），`capturePage` 直接报错。所以 Agent 用一个标签时先把它叫醒（`TabDriver.wake`）：用 CDP 打开 `Emulation.setFocusEmulationEnabled`，Chromium 把它算作可见的捕获者，页面不挂到窗口上也照常渲染，一帧之内（实测约 15ms）就能点、能截图，页面也认为自己有焦点，和用户在里面打字时一样。每次工具调用、每次调用页面运行时都续期，Agent 停手 3 秒后关掉，标签回到 hidden，重新节流。`open_tab` 默认在后台打开，用户切过去就能看。
 - **DevTools 协议只用在别的办法做不到的地方**：叫醒后台标签、网络记录、文件输入（`DOM.setFileInputFiles`）、拦截文件选择框。拦截只在 Agent 点击的那一下前后开启，不影响用户自己点。`open_tab` 在页面开始加载之前就挂上 Network，连主文档请求也能记到。控制台日志不走 CDP，直接用 `console-message` 事件，开启 Agent 后每个标签都记最近 300 条。
 - 页面原生右键菜单会跑一个嵌套的事件循环，卡住整个主进程（包括 MCP 服务），所以 Agent 右键时把它压下去。
+- **书签**：`list_tabs` 列出收藏、置顶标签和文件夹（带 Space 和文件夹的短 id）。`add_bookmark` 只存不打开（未加载的已保存标签，图标后台抓）；`move_tab` 在收藏 / 置顶 / 文件夹 / 普通标签之间、Space 之间移动；`create_folder` / `update_folder` / `delete_folder` 管文件夹，文件夹和 Space 也能按准确名字找。关闭书签只卸载，`close_tab` 带 `remove: true` 才删除。
+- **调试辅助**：`set_viewport` 用和设备工具栏同一套模拟（预设或任意尺寸），用户看得到工具栏，Agent 的截图和点击都在模拟视口里；`devtools` 给用户打开 DevTools（可以直接定位到某个 ref 的元素），不抢键盘焦点。
 - **把 Agent 的操作画出来**：
   - 标签显示在屏幕上、Agent 在干活时，页面四周有一圈彩虹光，从边缘往里淡出（`presence`）。遮罩是 `1 − F(x)·F(y)`，和模糊的内阴影同形，用 `mask-composite` 把横竖两条渐变相乘得到，没有拼缝，角上也不会出现色块。每次工具调用时它亮起来并流动，约 3 秒后落回微光并停转，所以 Agent 思考时页面边缘没有任何运动，合成器也不用为它出帧。每次工具调用都续一次；Agent 停手 45 秒时主进程把它关掉，万一这条消息没送到，页面自己 50 秒后也会关。关的时候只对已经注入了运行时的页面发消息，不会为了关灯去注入。
   - 彩虹只用在这圈光上，其余一律天空蓝、从简。光标是一个短而宽的圆角箭头：天空蓝实心填充、粗白描边、淡淡的投影，背后一圈呼吸的天空蓝光晕，滑向目标时会顺着方向倾斜一下。点击处扩散一圈天空蓝波纹；`snapshot` / `read_page` / `find` 时一道天空蓝柔光从上往下扫过：没有硬线，前缘柔和、尾巴渐隐，左右也淡出（最多 4 秒一次）。

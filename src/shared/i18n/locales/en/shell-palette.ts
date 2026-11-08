@@ -7,6 +7,8 @@ export default {
   'palette.command.newSpace': 'New space',
   'palette.command.reopenClosedTab': 'Reopen closed tab',
   'palette.command.toggleSidebar': 'Toggle sidebar',
+  'palette.command.toggleDevTools': 'Toggle developer tools',
+  'palette.command.toggleDeviceToolbar': 'Toggle device toolbar',
   'palette.command.loadUnpackedExtension': 'Load unpacked extension…',
 
   // Comma-separated match words for each command. Every language's words
@@ -14,6 +16,8 @@ export default {
   'palette.keywords.newSpace': 'space, new space',
   'palette.keywords.reopenClosedTab': 'reopen, restore',
   'palette.keywords.toggleSidebar': 'sidebar',
+  'palette.keywords.toggleDevTools': 'devtools, developer tools, inspect, console',
+  'palette.keywords.toggleDeviceToolbar': 'device, mobile, responsive, viewport, resolution, screen size',
   'palette.keywords.loadUnpackedExtension': 'extension, load unpacked, install extension',
 
   'palette.hint.switchToTab': 'Switch to tab',

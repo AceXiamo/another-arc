@@ -261,7 +261,12 @@ export class AgentService {
         return tab ? this.describeTab(tab) : id
       },
       suppressContextMenu: (wc: WebContents, ms: number) => this.noContextMenuUntil.set(wc, Date.now() + ms),
-      pendingDialog: () => this.pendingDialog(tabId)
+      pendingDialog: () => this.pendingDialog(tabId),
+      emulation: () => {
+        const rt = tabs.runtime(tabId)
+        const viewport = rt?.view === view ? rt.emulatedViewport : null
+        return viewport && rt ? { width: viewport.width, height: viewport.height, scale: rt.emulationScale } : null
+      }
     }
   }
 
@@ -305,6 +310,8 @@ export class AgentService {
         !tab.live && id !== viewing ? 'not loaded' : '',
         tab.agent ? 'agent' : '',
         this.pendingDialog(id) ? 'waiting on a dialog' : '',
+        tab.viewport ? `emulating ${tab.viewport.width}×${tab.viewport.height}` : '',
+        tab.devtools ? 'DevTools open' : '',
         isSavedTab(tab) && tab.savedUrl && tab.url !== tab.savedUrl ? `saved as ${tab.savedUrl}` : ''
       ].filter(Boolean)
       lines.push(`${indent}${id === viewing ? '* ' : '- '}${this.describeTab(tab)}${flags.length ? ` (${flags.join(', ')})` : ''}`)
@@ -316,14 +323,14 @@ export class AgentService {
           tabLine(id, indent)
           continue
         }
-        lines.push(`${indent}- Folder ${JSON.stringify(folder.name)}`)
+        lines.push(`${indent}- Folder [${shortId(folder.id)}] ${JSON.stringify(folder.name)}${folder.childIds.length ? '' : ' (empty)'}`)
         folderTree(folder.childIds, `${indent}  `)
       }
     }
     for (const spaceId of model.spaceOrder) {
       const space = model.getSpace(spaceId)
       if (!space) continue
-      lines.push(`Space ${JSON.stringify(space.name)}${spaceId === model.activeSpaceId ? ' (current)' : ''}`)
+      lines.push(`Space [${shortId(space.id)}] ${JSON.stringify(space.name)}${spaceId === model.activeSpaceId ? ' (current)' : ''}`)
       if (space.pinnedTabIds.length) {
         lines.push('  Favorites:')
         for (const id of space.pinnedTabIds) tabLine(id, '    ')

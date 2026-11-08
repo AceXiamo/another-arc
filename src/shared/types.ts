@@ -53,6 +53,10 @@ export interface TabState {
   lastActiveAt: number
   /** An agent (MCP) is driving this tab right now. Not persisted. */
   agent?: boolean
+  /** DevTools are open for this tab: docked beside the page per `WindowState.devtoolsDock`, or in their own window. Not persisted. */
+  devtools?: boolean
+  /** Device emulation (the device toolbar) is on, at this viewport. Not persisted. */
+  viewport?: ViewportSpec | null
 }
 
 /** Light/dark mode of the chrome while a space is active; 'system' follows Settings. */
@@ -114,9 +118,15 @@ export interface WindowState {
   /** A page requested HTML fullscreen (video etc.); the shell hides itself. */
   htmlFullscreen: boolean
   focused: boolean
+  /** Where DevTools open, and docked DevTools' width (left / right) and height (bottom). */
+  devtoolsDock: DevToolsDock
+  devtoolsWidth: number
+  devtoolsHeight: number
 }
 
 import type { Locale } from './i18n'
+import type { DevToolsDock } from './layout'
+import type { ViewportSpec } from './viewport'
 
 export type SearchEngineId = 'google' | 'bing' | 'duckduckgo' | 'baidu' | 'kagi' | 'custom'
 

@@ -19,10 +19,24 @@ import { agentSnippet, agentUrl, type AgentInfo, type AgentSnippet } from '@shar
 import { DEFAULT_PROFILE_ID, DEFAULT_SPACE, DEFAULT_WINDOW_STATE } from '@shared/defaults'
 import type { ImportableBrowser, ImportBrowser } from '@shared/ext-import'
 import { chromeColor } from '@shared/theme'
-import { clampSidebarWidth, FLIGHT_FRAME, SURFACE_FRAME_PREFIX, surfaceBounds, SURFACES, type Rect, type SurfaceId } from '@shared/layout'
+import {
+  clampDevtoolsSize,
+  clampSidebarWidth,
+  DEVTOOLS_DOCKS,
+  FLIGHT_FRAME,
+  LAYOUT,
+  SURFACE_FRAME_PREFIX,
+  surfaceBounds,
+  SURFACES,
+  type DevToolsDock,
+  type DockSide,
+  type Rect,
+  type SurfaceId
+} from '@shared/layout'
 import type { ShellSnapshot, WindowState } from '@shared/types'
 import { translator, type Translate } from '@shared/i18n'
 import { buildSearchUrl, internalUrl, SEARCH_ENGINES, searchTemplate, type InternalPage } from '@shared/url'
+import { DEFAULT_VIEWPORT_PRESET, presetSpec, sanitizeViewport, type ViewportSpec } from '@shared/viewport'
 import type { AgentService } from '../agent/agent-service'
 import { DownloadManager } from '../downloads/download-manager'
 import { PasswordManager } from '../passwords/password-manager'
@@ -54,7 +68,7 @@ import {
 } from '../import/import-flow'
 import { TabDiscarder } from '../tabs/discarder'
 import { PageDialogs } from '../tabs/page-dialogs'
-import { TabManager } from '../tabs/tab-manager'
+import { DEVTOOLS_WINDOW_BOUNDS_KEY, TabManager } from '../tabs/tab-manager'
 import { ZOOM_SETTINGS_KEY, ZoomStore } from '../tabs/zoom'
 import { BrowserWindowController } from '../windows/browser-window'
 import { ShellSync } from '../windows/shell-sync'
@@ -63,6 +77,8 @@ import { mark, startupMarks } from './perf'
 import { handleAppProtocols, SHELL_ORIGIN, shellUrl } from './protocols'
 
 const ARC_IMPORT_OFFERED_KEY = 'import.arcOffered'
+const DEVTOOLS_LAYOUT_KEY = 'devtools.layout'
+const VIEWPORT_LAST_KEY = 'viewport.last'
 const AGENT_TOKEN_KEY = 'agent.token'
 /** Let the window paint before asking. */
 const ARC_IMPORT_OFFER_DELAY_MS = 600
@@ -120,6 +136,10 @@ export class Browser {
   private agentToken: string
   /** Starts and stops run one after another, however fast the toggle flips. */
   private agentSync: Promise<void> = Promise.resolve()
+  /** The side DevTools last docked to (⌘⇧D goes back to it from a window of their own). */
+  private devtoolsSide: DockSide = 'right'
+  /** The device the device toolbar last emulated; it starts there next time. */
+  private lastViewport: ViewportSpec | null = null
 
   constructor() {
     this.db = new Database(userDataPath('browser.db'))
@@ -221,6 +241,18 @@ export class Browser {
       sidebarWidth: clampSidebarWidth(layout.sidebarWidth ?? DEFAULT_WINDOW_STATE.sidebarWidth),
       sidebarCollapsed: layout.sidebarCollapsed === true
     }
+    const devtools = (stored.get(DEVTOOLS_LAYOUT_KEY) ?? {}) as Partial<WindowState> & { side?: DockSide }
+    const dock = DEVTOOLS_DOCKS.find((d) => d === devtools.devtoolsDock) ?? DEFAULT_WINDOW_STATE.devtoolsDock
+    this.windowState.devtoolsDock = dock
+    this.windowState.devtoolsWidth = clampDevtoolsSize(devtools.devtoolsWidth ?? NaN, LAYOUT.devtoolsWidth)
+    this.windowState.devtoolsHeight = clampDevtoolsSize(devtools.devtoolsHeight ?? NaN, LAYOUT.devtoolsHeight)
+    this.devtoolsSide = dock !== 'undocked' ? dock : (['right', 'bottom', 'left'] as const).find((d) => d === devtools.side) ?? 'right'
+    this.tabs.setDevToolsDock(dock)
+    const devtoolsBounds = stored.get(DEVTOOLS_WINDOW_BOUNDS_KEY) as Electron.Rectangle | undefined
+    if (devtoolsBounds && [devtoolsBounds.x, devtoolsBounds.y, devtoolsBounds.width, devtoolsBounds.height].every(Number.isFinite)) {
+      this.tabs.devtoolsWindowBounds = devtoolsBounds
+    }
+    this.lastViewport = sanitizeViewport(stored.get(VIEWPORT_LAST_KEY))
 
     this.tabs.restore(
       this.store.loadSpaces(),
@@ -302,7 +334,10 @@ export class Browser {
       layout: {
         sidebarWidth: this.windowState.sidebarWidth,
         sidebarCollapsed: this.windowState.sidebarCollapsed,
-        htmlFullscreen: false
+        htmlFullscreen: false,
+        devtoolsSide: this.devtoolsSide,
+        devtoolsWidth: this.windowState.devtoolsWidth,
+        devtoolsHeight: this.windowState.devtoolsHeight
       },
       preload: outPath('preload', 'shell.cjs'),
       backgroundColor: (this.windowColor = this.windowBackground()),
@@ -602,6 +637,79 @@ export class Browser {
     }
   }
 
+  // ---------------------------------------------------------------------------
+  // DevTools and the device toolbar
+  // ---------------------------------------------------------------------------
+
+  /** Where DevTools open, and docked DevTools' size (the splitter drags these). */
+  setDevTools(opts: { dock?: DevToolsDock; width?: number; height?: number }): void {
+    const current = this.windowState
+    const patch: Partial<WindowState> = {}
+    if (opts.dock !== undefined && opts.dock !== current.devtoolsDock) patch.devtoolsDock = opts.dock
+    if (opts.width !== undefined) {
+      const width = clampDevtoolsSize(opts.width, current.devtoolsWidth)
+      if (width !== current.devtoolsWidth) patch.devtoolsWidth = width
+    }
+    if (opts.height !== undefined) {
+      const height = clampDevtoolsSize(opts.height, current.devtoolsHeight)
+      if (height !== current.devtoolsHeight) patch.devtoolsHeight = height
+    }
+    if (Object.keys(patch).length === 0) return
+    this.patchWindow(patch)
+    const s = this.windowState
+    if (s.devtoolsDock !== 'undocked') this.devtoolsSide = s.devtoolsDock
+    // The window's layout first: DevTools coming back from their own window land on this side.
+    this.window?.setLayout({ devtoolsSide: this.devtoolsSide, devtoolsWidth: s.devtoolsWidth, devtoolsHeight: s.devtoolsHeight })
+    if (patch.devtoolsDock) {
+      this.tabs.setDevToolsDock(patch.devtoolsDock)
+      this.installMenu()
+    }
+    this.persister.setSetting(DEVTOOLS_LAYOUT_KEY, {
+      devtoolsDock: s.devtoolsDock,
+      devtoolsWidth: s.devtoolsWidth,
+      devtoolsHeight: s.devtoolsHeight,
+      side: this.devtoolsSide
+    })
+  }
+
+  /** ⌘⇧D, Chrome's "toggle dock side": between the last docked side and a window of their own. */
+  toggleDevToolsDock(): void {
+    this.setDevTools({ dock: this.windowState.devtoolsDock === 'undocked' ? this.devtoolsSide : 'undocked' })
+  }
+
+  /** The dock choices, as menu items (the splitter's context menu). */
+  devtoolsDockItems(tabId: string | null): Electron.MenuItemConstructorOptions[] {
+    const dock = this.windowState.devtoolsDock
+    const choice = (value: DevToolsDock, label: string): Electron.MenuItemConstructorOptions => ({
+      label,
+      type: 'radio',
+      checked: dock === value,
+      click: () => this.setDevTools({ dock: value })
+    })
+    return [
+      choice('right', this.t('menu.dockRight')),
+      choice('bottom', this.t('menu.dockBottom')),
+      choice('left', this.t('menu.dockLeft')),
+      choice('undocked', this.t('menu.dockUndocked')),
+      ...(tabId
+        ? ([{ type: 'separator' }, { label: this.t('menu.closeDevTools'), click: () => this.tabs.closeDevTools(tabId) }] as const)
+        : [])
+    ]
+  }
+
+  /** Turn the device toolbar on (at the device used last) or off. */
+  toggleDeviceToolbar(tabId: string): void {
+    const tab = this.tabs.model.getTab(tabId)
+    if (!tab) return
+    this.setViewport(tabId, tab.viewport ? null : (this.lastViewport ?? presetSpec(DEFAULT_VIEWPORT_PRESET)))
+  }
+
+  setViewport(tabId: string, spec: ViewportSpec | null): void {
+    if (!this.tabs.setViewport(tabId, spec) || !spec) return
+    this.lastViewport = spec
+    this.persister.setSetting(VIEWPORT_LAST_KEY, spec)
+  }
+
   private patchWindow(patch: Partial<WindowState>): void {
     this.windowState = { ...this.windowState, ...patch }
     this.shell.window(patch)
@@ -676,6 +784,18 @@ export class Browser {
         return this.setSidebar({ collapsed: !this.windowState.sidebarCollapsed })
       case 'page.devtools':
         return active && tabs.toggleDevTools(active.id)
+      case 'page.deviceToolbar':
+        return active && this.toggleDeviceToolbar(active.id)
+      case 'devtools.dock.right':
+        return this.setDevTools({ dock: 'right' })
+      case 'devtools.dock.bottom':
+        return this.setDevTools({ dock: 'bottom' })
+      case 'devtools.dock.left':
+        return this.setDevTools({ dock: 'left' })
+      case 'devtools.dock.undocked':
+        return this.setDevTools({ dock: 'undocked' })
+      case 'devtools.dock.toggle':
+        return this.toggleDevToolsDock()
       case 'shell.devtools':
         return window?.shellContents.openDevTools({ mode: 'detach' })
       case 'open.history':
@@ -751,7 +871,8 @@ export class Browser {
             this.tabs.createTab({ url, background, spaceId: tab.spaceId, index })
           },
           search: (text) => this.tabs.createTab({ url: buildSearchUrl(text, searchTemplate(settings)) }),
-          extensionItems: () => this.extensions.contextMenuItems(wc, params)
+          extensionItems: () => this.extensions.contextMenuItems(wc, params),
+          inspect: (x, y) => this.tabs.openDevTools(tab.id, { inspect: { x, y } })
         })
       },
       beforeInput: (_tabId, event, input) => this.handleReservedKeys(event, input),
@@ -917,7 +1038,7 @@ export class Browser {
 
   /** (Re)build the native menu; called again whenever the language changes. */
   private installMenu(): void {
-    Menu.setApplicationMenu(buildAppMenu((id) => this.runCommand(id), { isDev, t: this.t }))
+    Menu.setApplicationMenu(buildAppMenu((id) => this.runCommand(id), { isDev, t: this.t, devtoolsDock: this.windowState.devtoolsDock }))
   }
 
   startupMarks(): Record<string, number> {
